@@ -39,21 +39,60 @@ Three layers:
 
 - **Operational** (`Policies.lean`). The headline theorem
   `multnExact_soundForCE_first_install`: `multnExactPolicy` is sound
-  for `ConservativeExt` under four install-protocol hypotheses
-  (`OrigBoundIn`, `NumQBoundIn`, `HeapValid`, `EnvValid`). Proved
-  conditional on `multnExact_CE_nonnum_case`.
+  for `ConservativeExt` under seven install-protocol hypotheses
+  (`OrigBoundIn`, `NumQBoundIn`, `HeapValid`, `EnvValid metaEnv`,
+  `EnvValid (cenvOf new)`, `ValValid op`, `ListValValid operands`).
+  The first two are install-time facts; the remaining five are
+  runtime invariants the runner naturally maintains. Proved
+  conditional on the inner trace through the closure body in
+  `multnExact_CE_nonnum_case` (the structural setup is done; the
+  remaining ~200 LOC mechanical eval-trace is open).
 
-- **Infrastructure** (`Bisim.lean`). The framing theorem
-  `applyDirect_frame` and parallel statements for `eval`, `evalList`,
-  `applyVia`. Built on depth-indexed `ValVis_aux` / `EnvVis_aux`,
-  `WFCtx` invariant bundle, `HeapExt` and `StateExt`, `ListValVis`,
-  and `ValValid` / `HeapValid` / `EnvValid` validity machinery.
+- **Infrastructure** (`Bisim.lean`). The framing theorem `frame` —
+  parallel statements for `eval`, `evalList`, `applyVia`,
+  `applyDirect`. Built on depth-indexed `ValVis_aux` / `EnvVis_aux`,
+  `WFCtx` invariant bundle, `HeapExt` (same-side heap-monotonicity),
+  `StateExt` (cross-side same-policy), `ListValVis`,
+  `ValValid` / `HeapValid` / `EnvValid` validity machinery, plus
+  `applyPrim_bisim` (per-prim bisim respect, ~600 LOC) and
+  `alloc_chain_bisim` (foldl-induction for closure-call arg
+  allocation, ~150 LOC). **Closed for all eval/evalList/applyVia
+  cases and all `applyDirect` constructor cases (closure, prim,
+  builtinBaseApply); two `eval` cases remain — see *Open work*
+  below.**
 
 Value relation `ValVis` is syntax-based data refinement à la CakeML
 (Kumar 2016 §3): two closures relate iff their bodies are equal and
 their captured envs are pointwise related. The natural same-`Val`
 framing is provably false in the presence of closures with captured
 envs.
+
+The cross-side `StateExt` is just **policy equality**. An earlier
+heap-prefix component (`∃ extras, s_b.heap = s_a.heap ++ extras`)
+was provably wrong as an output invariant — independent allocations
+on the two sides break it. The cross-side heap relation is implicit
+through `ValVis` / `EnvVis` on the relevant values, which take two
+heaps without requiring a prefix relation.
+
+## Open work
+
+Three items remain `sorry`'d, all architectural rather than
+mechanical:
+
+- **`.quote v`** in `frame` — needs a `ClosedVal v` predicate
+  restricting quoted Vals to those without closure references, or
+  `ValValid v` on both heaps as an additional hypothesis.
+- **`.set`** in `frame` — the meta-mutation policy gate breaks
+  under bisimulation since `s.policy` can return different verdicts
+  on `ValVis`-related-but-unequal inputs. Needs a "policy is
+  bisimulation-respecting" hypothesis added to `WFCtx` (the policies
+  in `verifiedTable` actually satisfy it, but encoding this is a new
+  design decision).
+- **Inner trace of `multnExact_CE_nonnum_case`** — structural
+  prerequisites are established (closure shape, `orig`/`num?`
+  indices, `applyDirect fuel op operands` from `h_old`). The
+  remaining gap is a mechanical eval-trace through the closure
+  body that ends in a single `frame.applyDirect` application.
 
 ## Layout
 
