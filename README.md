@@ -45,10 +45,10 @@ Three layers:
   `fuel ≥ 2`). The first two are install-time facts; the next five
   are runtime invariants the runner naturally maintains; the fuel
   bound is trivially satisfied at the call site (`Smoke.lean` runs
-  at `fuel = 10000`). Proved conditional on the inner trace through
-  the closure body in `multnExact_CE_nonnum_case` (the structural
-  setup is done; the remaining ~200 LOC mechanical eval-trace is
-  open).
+  at `fuel = 10000`). Proved conditional on `multn_closure_body_unfolds`,
+  a focused trace lemma that captures the deterministic eval-trace
+  through the closure body. The composition with `frame.applyDirect`
+  is fully proved; only the trace lemma's body remains open.
 
 - **Infrastructure** (`Bisim.lean`). The framing theorem `frame` —
   parallel statements for `eval`, `evalList`, `applyVia`,
@@ -90,11 +90,15 @@ mechanical:
   bisimulation-respecting" hypothesis added to `WFCtx` (the policies
   in `verifiedTable` actually satisfy it, but encoding this is a new
   design decision).
-- **Inner trace of `multnExact_CE_nonnum_case`** — structural
-  prerequisites are established (closure shape, `orig`/`num?`
-  indices, `applyDirect fuel op operands` from `h_old`). The
-  remaining gap is a mechanical eval-trace through the closure
-  body that ends in a single `frame.applyDirect` application.
+- **`multn_closure_body_unfolds`** in `Policies.lean` — the
+  deterministic eval-trace lemma that says `callAsBaseApply` on
+  the multn closure unfolds to `applyDirect fuel op operands` at
+  the alloc'd state. `multnExact_CE_nonnum_case` is closed
+  modulo this lemma (it composes the trace with `frame.applyDirect`
+  to give the bisim result). The trace itself is mechanical but
+  hits Lean infrastructure friction (definitional equality on
+  `(s.heap ++ [v]).length` vs `s.heap.length + 1`, and on the
+  `match`-based `callAsBaseApply` reducing to its `_` arm).
 
 ## Layout
 

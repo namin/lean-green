@@ -210,6 +210,247 @@ def OrigBoundIn (heap : Heap) (old : Val) (new : Val) : Prop :=
 def NumQBoundIn (heap : Heap) (cenv : Env) : Prop :=
   ∃ idx, cenv.lookup "num?" = some idx ∧ heap[idx]? = some (.prim "num?")
 
+/-! ## multn closure-body trace lemma (sketch)
+
+    The intent: with `fuel ≥ 2`, `callAsBaseApply` on the multn closure
+    unfolds in `fuel + 4` steps to `applyDirect fuel op operands` at
+    the alloc'd state.
+
+    The proof requires stepping through `applyDirect`'s closure case
+    (length check + foldl alloc + eval body), then `eval` of the .ifte
+    cond and else branches, etc. Each step is a definitional reduction,
+    but Lean's match-equational-lemma generation and reduction-not-
+    definitional-equality issues (notably `(s.heap ++ [v]).length` vs
+    `s.heap.length + 1`) prevent a clean `show ... = ...` chain.
+
+    Stage-3 work item — the structural setup is in
+    `multnExact_CE_nonnum_case` below. -/
+theorem multn_closure_body_unfolds
+    (fuel : Nat) (h_fuel : fuel ≥ 2)
+    (ptable : PolicyTable) (op : Val) (h_op : OpNotNum op)
+    (operands : List Val)
+    (t : Expr) (cenv : Env) (idx_o idx_n : Nat)
+    (h_lookup_o : cenv.lookup "orig" = some idx_o)
+    (h_lookup_n : cenv.lookup "num?" = some idx_n)
+    (s : RunState) (metaEnv : Env)
+    (h_heap_o : (s.heap ++ [op, listToVal operands])[idx_o]? =
+                some .builtinBaseApply)
+    (h_heap_n : (s.heap ++ [op, listToVal operands])[idx_n]? =
+                some (.prim "num?")) :
+    callAsBaseApply (fuel + 4) ptable
+      (.closure ["op", "args"]
+        (.ifte (.primApp (.var "num?") [.var "op"]) t
+               (.primApp (.var "orig") [.var "op", .var "args"]))
+        cenv) op operands metaEnv s
+    = applyDirect fuel ptable op operands metaEnv
+        { heap := s.heap ++ [op, listToVal operands], policy := s.policy } := by
+  sorry
+/- Sketch (kept commented out — runs into definitional-equality friction
+   on `(s.heap ++ [op]).length` vs `s.heap.length + 1` in the foldl
+   output). Each step is structurally a `rfl`-level reduction:
+  obtain ⟨k, hk⟩ : ∃ k, fuel = k + 2 := ⟨fuel - 2, by omega⟩
+  subst hk
+  -- Heap lookups at the fresh indices.
+  have h_lookup_op_alloc :
+      (s.heap ++ [op, listToVal operands])[s.heap.length]? = some op := by
+    rw [List.getElem?_append_right (Nat.le_refl _)]; simp
+  have h_lookup_args_alloc :
+      (s.heap ++ [op, listToVal operands])[s.heap.length + 1]?
+        = some (listToVal operands) := by
+    rw [List.getElem?_append_right (by omega)]; simp
+  -- Normalize fuel: k + 2 + 4 = k + 6, k + 2 + 3 = k + 5, etc.
+  show callAsBaseApply (k + 6) ptable _ op operands metaEnv s = _
+  -- Step 1: callAsBaseApply on closure unfolds to applyDirect.
+  unfold callAsBaseApply
+  show applyDirect (k + 6) ptable
+       (.closure ["op", "args"] _ cenv) [op, listToVal operands] metaEnv s
+       = _
+  -- Step 2: applyDirect on closure (length 2 = 2, foldl alloc, eval body).
+  show eval (k + 5) ptable
+       (.ifte (.primApp (.var "num?") [.var "op"]) t
+              (.primApp (.var "orig") [.var "op", .var "args"]))
+       (Env.cons "args" (s.heap.length + 1)
+        (Env.cons "op" s.heap.length cenv))
+       metaEnv
+       { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+       = _
+  -- Step 3: prove the cond evaluates to .bool false.
+  have h_cond : eval (k + 4) ptable (.primApp (.var "num?") [.var "op"])
+        (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+        metaEnv
+        { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+        = some (.bool false,
+            { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+    show (match eval (k + 3) ptable (.var "num?") _ metaEnv _ with
+          | none => none
+          | some (fv, s') =>
+              match evalList (k + 3) ptable [.var "op"] _ metaEnv s' with
+              | none => none
+              | some (avs, s'') => applyDirect (k + 3) ptable fv avs metaEnv s'') = _
+    -- Eval (.var "num?") in env_alloc → falls through to cenv → .prim "num?".
+    have h_var_numq :
+        eval (k + 3) ptable (.var "num?")
+          (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+          metaEnv
+          { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+        = some (.prim "num?",
+            { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+      show (match (Env.cons "args" (s.heap.length + 1)
+              (Env.cons "op" s.heap.length cenv)).lookup "num?" with
+            | some idx => match _ with
+                | some v => some (v, _)
+                | none => none
+            | none => none) = _
+      rw [env_alloc_lookup_other "num?" (by decide) (by decide)]
+      rw [h_lookup_n]
+      show (match (s.heap ++ [op, listToVal operands])[idx_n]? with
+            | some v => some (v, _)
+            | none => none) = _
+      rw [h_heap_n]
+    rw [h_var_numq]
+    -- evalList [.var "op"] → ([op], s_alloc).
+    have h_evalList_one :
+        evalList (k + 3) ptable [.var "op"]
+          (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+          metaEnv
+          { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+        = some ([op],
+            { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+      show (match eval (k + 2) ptable (.var "op") _ metaEnv _ with
+            | none => none
+            | some (v, s') =>
+                match evalList (k + 2) ptable [] _ metaEnv s' with
+                | none => none
+                | some (vs, s'') => some (v :: vs, s'')) = _
+      have h_var_op :
+          eval (k + 2) ptable (.var "op")
+            (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+            metaEnv
+            { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+          = some (op,
+              { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+        show (match (Env.cons "args" (s.heap.length + 1)
+                (Env.cons "op" s.heap.length cenv)).lookup "op" with
+              | some idx => match _ with
+                  | some v => some (v, _)
+                  | none => none
+              | none => none) = _
+        rw [env_alloc_lookup_op]
+        show (match (s.heap ++ [op, listToVal operands])[s.heap.length]? with
+              | some v => some (v, _)
+              | none => none) = _
+        rw [h_lookup_op_alloc]
+      rw [h_var_op]
+      rfl
+    rw [h_evalList_one]
+    -- applyDirect (.prim "num?") [op] → applyPrim → .bool false.
+    show (match applyPrim "num?" [op] with
+          | some v => some (v, _)
+          | none => none) = _
+    rw [applyPrim_numq_nonnum op h_op]
+  rw [h_cond]
+  -- Now eval the else branch.
+  show eval (k + 4) ptable
+       (.primApp (.var "orig") [.var "op", .var "args"])
+       (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+       metaEnv
+       { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+       = _
+  show (match eval (k + 3) ptable (.var "orig") _ metaEnv _ with
+        | none => none
+        | some (fv, s') =>
+            match evalList (k + 3) ptable [.var "op", .var "args"] _ metaEnv s' with
+            | none => none
+            | some (avs, s'') => applyDirect (k + 3) ptable fv avs metaEnv s'') = _
+  -- Eval (.var "orig") → .builtinBaseApply.
+  have h_var_orig :
+      eval (k + 3) ptable (.var "orig")
+        (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+        metaEnv
+        { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+      = some (.builtinBaseApply,
+          { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+    show (match (Env.cons "args" (s.heap.length + 1)
+            (Env.cons "op" s.heap.length cenv)).lookup "orig" with
+          | some idx => match _ with
+              | some v => some (v, _)
+              | none => none
+          | none => none) = _
+    rw [env_alloc_lookup_other "orig" (by decide) (by decide)]
+    rw [h_lookup_o]
+    show (match (s.heap ++ [op, listToVal operands])[idx_o]? with
+          | some v => some (v, _)
+          | none => none) = _
+    rw [h_heap_o]
+  rw [h_var_orig]
+  -- evalList [.var "op", .var "args"] → ([op, listToVal operands], s_alloc).
+  have h_evalList_two :
+      evalList (k + 3) ptable [.var "op", .var "args"]
+        (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+        metaEnv
+        { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+      = some ([op, listToVal operands],
+          { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+    show (match eval (k + 2) ptable (.var "op") _ metaEnv _ with
+          | none => none
+          | some (v, s') =>
+              match evalList (k + 2) ptable [.var "args"] _ metaEnv s' with
+              | none => none
+              | some (vs, s'') => some (v :: vs, s'')) = _
+    have h_var_op :
+        eval (k + 2) ptable (.var "op")
+          (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+          metaEnv
+          { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+        = some (op,
+            { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+      show (match (Env.cons "args" (s.heap.length + 1)
+              (Env.cons "op" s.heap.length cenv)).lookup "op" with
+            | some idx => match _ with
+                | some v => some (v, _)
+                | none => none
+            | none => none) = _
+      rw [env_alloc_lookup_op]
+      show (match (s.heap ++ [op, listToVal operands])[s.heap.length]? with
+            | some v => some (v, _)
+            | none => none) = _
+      rw [h_lookup_op_alloc]
+    rw [h_var_op]
+    show (match eval (k + 1) ptable (.var "args") _ metaEnv _ with
+          | none => none
+          | some (v, s') =>
+              match evalList (k + 1) ptable [] _ metaEnv s' with
+              | none => none
+              | some (vs, s'') => some (op :: v :: vs, s'')) = _
+    have h_var_args :
+        eval (k + 1) ptable (.var "args")
+          (Env.cons "args" (s.heap.length + 1) (Env.cons "op" s.heap.length cenv))
+          metaEnv
+          { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+        = some (listToVal operands,
+            { heap := s.heap ++ [op, listToVal operands], policy := s.policy }) := by
+      show (match (Env.cons "args" (s.heap.length + 1)
+              (Env.cons "op" s.heap.length cenv)).lookup "args" with
+            | some idx => match _ with
+                | some v => some (v, _)
+                | none => none
+            | none => none) = _
+      rw [env_alloc_lookup_args]
+      show (match (s.heap ++ [op, listToVal operands])[s.heap.length + 1]? with
+            | some v => some (v, _)
+            | none => none) = _
+      rw [h_lookup_args_alloc]
+    rw [h_var_args]
+    rfl
+  rw [h_evalList_two]
+  -- applyDirect (.builtinBaseApply) [op, listToVal operands]
+  --   → applyDirect op operands.
+  show (match valToList (listToVal operands) with
+        | some operands' => applyDirect (k + 2) ptable op operands' metaEnv _
+        | none => none) = _
+  rw [valToList_listToVal]
+-/
+
 /-! ## Conditional CE soundness for `multnExactPolicy` -/
 
 /-- **Numerical-operator half**: vacuous, since `builtinBaseApply`
@@ -284,28 +525,93 @@ theorem multnExact_CE_nonnum_case
   have h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s') := by
     unfold callAsBaseApply at h_old
     exact h_old
-  -- The remaining work is the deterministic eval-trace through the closure
-  -- body. With `fuel ≥ 2` (new hypothesis), the trace at outer fuel `fuel + 4`
-  -- unfolds:
-  --
-  --   callAsBaseApply (fuel + 4) ptable new op operands metaEnv s
-  --     = applyDirect (fuel + 4) ptable new [op, listToVal operands] metaEnv s
-  --     -- closure case: alloc op, listToVal operands; eval body in env_alloc
-  --     = eval (fuel + 3) body env_alloc metaEnv s_alloc
-  --     -- body = .ifte (primApp num? op) t (primApp orig op args)
-  --     -- cond evaluates to .bool false (using applyPrim_numq_nonnum + h_op)
-  --     = eval (fuel + 2) (else branch) env_alloc metaEnv s_alloc
-  --     -- else = primApp orig op args; orig → .builtinBaseApply via h_lookup_o
-  --     = applyDirect (fuel + 1) .builtinBaseApply [op, listToVal operands] metaEnv s_alloc
-  --     -- builtinBaseApply: valToList listToVal operands = some operands
-  --     = applyDirect fuel op operands metaEnv s_alloc
-  --     -- frame.applyDirect relates this to h_app, giving (r_b, s_b') with ValVis r r_b
-  --
-  -- Each step is a direct unfolding using `eval`'s and `applyDirect`'s
-  -- definitions. The structural prerequisites are established
-  -- (closure shape, `orig`/`num?` indices, fuel bound, `h_app`).
-  -- The mechanical eval-trace itself is open.
-  sorry
+  -- Heap-index validity (lookups in s.heap succeed → idx < s.heap.length).
+  have h_idx_o_lt : idx_o < s.heap.length := by
+    have := List.getElem?_eq_some_iff.mp h_heap_o
+    obtain ⟨h, _⟩ := this; exact h
+  have h_idx_n_lt : idx_n < s.heap.length := by
+    have := List.getElem?_eq_some_iff.mp h_heap_n
+    obtain ⟨h, _⟩ := this; exact h
+  -- Heap lookups in the alloc'd state.
+  have h_lookup_orig_alloc :
+      (s.heap ++ [op, listToVal operands])[idx_o]? = some .builtinBaseApply := by
+    rw [List.getElem?_append_left h_idx_o_lt]; exact h_heap_o
+  have h_lookup_numq_alloc :
+      (s.heap ++ [op, listToVal operands])[idx_n]? = some (.prim "num?") := by
+    rw [List.getElem?_append_left h_idx_n_lt]; exact h_heap_n
+  -- Apply the trace lemma to reduce callAsBaseApply (fuel + 4) ... new ... to
+  -- applyDirect fuel ptable op operands metaEnv s_alloc.
+  have h_trace := multn_closure_body_unfolds fuel h_fuel ptable op h_op operands
+    t cenv idx_o idx_n h_lookup_o h_lookup_n s metaEnv
+    h_lookup_orig_alloc h_lookup_numq_alloc
+  -- Now apply frame.applyDirect: relate h_app at state s to a b-side call at
+  -- s_alloc with the same op and operands. Build the inputs.
+  let s_alloc : RunState :=
+    { heap := s.heap ++ [op, listToVal operands], policy := s.policy }
+  -- HeapValid s_alloc.heap.
+  have hh_alloc : HeapValid s_alloc.heap := by
+    intro i v hp
+    show ValValid v (s.heap ++ [op, listToVal operands])
+    by_cases h_lt : i < s.heap.length
+    · have hp_old : s.heap[i]? = some v := by
+        rw [← getElem?_prefix s.heap [op, listToVal operands] i h_lt]
+        exact hp
+      exact ValValid.heap_extends v (h_heap i v hp_old) ⟨_, rfl⟩
+    · have h_lookup_op_alloc :
+          (s.heap ++ [op, listToVal operands])[s.heap.length]? = some op := by
+        rw [List.getElem?_append_right (Nat.le_refl _)]; simp
+      have h_lookup_args_alloc :
+          (s.heap ++ [op, listToVal operands])[s.heap.length + 1]?
+            = some (listToVal operands) := by
+        rw [List.getElem?_append_right (by omega)]; simp
+      by_cases h_eq2 : i = s.heap.length
+      · subst h_eq2
+        rw [h_lookup_op_alloc] at hp
+        have : op = v := by injection hp
+        subst this
+        exact ValValid.heap_extends op hv_op ⟨_, rfl⟩
+      · have h_eq3 : i = s.heap.length + 1 := by
+          have h_le : i < (s.heap ++ [op, listToVal operands]).length := by
+            rw [List.getElem?_eq_some_iff] at hp
+            obtain ⟨h, _⟩ := hp; exact h
+          simp [List.length_append] at h_le; omega
+        subst h_eq3
+        rw [h_lookup_args_alloc] at hp
+        have : listToVal operands = v := by injection hp
+        subst this
+        exact ValValid.heap_extends (listToVal operands)
+          (ValValid_listToVal hv_operands) ⟨_, rfl⟩
+  have hem_alloc : EnvValid metaEnv s_alloc.heap :=
+    EnvValid.heap_extends h_meta_valid ⟨_, rfl⟩
+  have hv_op_alloc : ValValid op s_alloc.heap :=
+    ValValid.heap_extends op hv_op ⟨_, rfl⟩
+  have hv_operands_alloc : ListValValid operands s_alloc.heap :=
+    ListValValid.heap_extends hv_operands ⟨_, rfl⟩
+  have h_vv_op : ValVis op op s.heap s_alloc.heap := by
+    intro d
+    show ValVis_aux d op op s.heap (s.heap ++ [op, listToVal operands])
+    exact ValVis_aux_self_extend d op s.heap _ h_heap hv_op
+  have h_lvv_operands : ListValVis operands operands s.heap s_alloc.heap :=
+    ListValVis_self_extend [op, listToVal operands] h_heap hv_operands
+  have h_state_ext : StateExt s s_alloc := by show s.policy = s_alloc.policy; rfl
+  have h_ctx : WFCtx metaEnv metaEnv metaEnv s s_alloc :=
+    ⟨h_state_ext, h_heap, hh_alloc, h_meta_valid, hem_alloc, h_meta_valid, hem_alloc⟩
+  have h_meta_vis : EnvVis metaEnv metaEnv s.heap s_alloc.heap := by
+    intro d
+    show EnvVis_aux d metaEnv metaEnv s.heap (s.heap ++ [op, listToVal operands])
+    exact EnvVis_aux_self_of_valid' d metaEnv s.heap _
+      h_meta_valid h_heap ⟨_, rfl⟩
+      (fun v hv_v => ValVis_aux_self_extend d v s.heap _ h_heap hv_v)
+  obtain ⟨_, _, _, frame_apply⟩ := frame fuel
+  obtain ⟨r_b, s_b', h_eval_b, h_vv_r, _, _, _, _, _, _⟩ :=
+    frame_apply ptable op op operands operands metaEnv s s_alloc r s'
+      h_ctx h_vv_op h_lvv_operands h_meta_vis hv_op hv_op_alloc
+      hv_operands hv_operands_alloc h_app
+  -- Combine: h_trace gives the outer = inner-applyDirect equality, and
+  -- h_eval_b gives the inner-applyDirect = some result.
+  refine ⟨fuel + 4, s_b', r_b, ?_, h_vv_r⟩
+  rw [h_trace]
+  exact h_eval_b
 
 /-- **Full conditional CE soundness for `multnExactPolicy`** (first
     install). Combines the numerical and non-numerical cases by case

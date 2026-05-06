@@ -1867,6 +1867,37 @@ def allocStep (acc : Heap × Env) (vp : Val × String) : Heap × Env :=
   let (hh', idx) := hh.alloc vp.1
   (hh', .cons vp.2 idx ee)
 
+/-! ## Self-extend helpers -/
+
+/-- A list of `ValValid` values is `ListValVis` with itself across a
+    heap extension. Used to build self-bisim hypotheses for the
+    inner `frame.applyDirect` call in `multnExact_CE_nonnum_case`. -/
+theorem ListValVis_self_extend : ∀ {xs : List Val} {h : Heap} (extras : Heap),
+    HeapValid h → ListValValid xs h →
+    ListValVis xs xs h (h ++ extras)
+  | [], _, _, _, _ => trivial
+  | x :: _, h, extras, hh, ⟨hv_x, hv_rest⟩ =>
+      ⟨fun d => ValVis_aux_self_extend d x h extras hh hv_x,
+       ListValVis_self_extend extras hh hv_rest⟩
+
+/-! ## Env-lookup helpers for the multn closure-body trace -/
+
+theorem env_alloc_lookup_op (s_heap : Heap) (cenv : Env) :
+    (Env.cons "args" (s_heap.length + 1)
+      (Env.cons "op" s_heap.length cenv)).lookup "op" = some s_heap.length := by
+  simp [Env.lookup]
+
+theorem env_alloc_lookup_args (s_heap : Heap) (cenv : Env) :
+    (Env.cons "args" (s_heap.length + 1)
+      (Env.cons "op" s_heap.length cenv)).lookup "args" = some (s_heap.length + 1) := by
+  simp [Env.lookup]
+
+theorem env_alloc_lookup_other {s_heap : Heap} {cenv : Env}
+    (x : String) (h1 : x ≠ "args") (h2 : x ≠ "op") :
+    (Env.cons "args" (s_heap.length + 1)
+      (Env.cons "op" s_heap.length cenv)).lookup x = cenv.lookup x := by
+  simp [Env.lookup, h1.symm, h2.symm]
+
 /-- Foldl-allocation preserves the validity and bisimulation invariants:
     starting from `EnvVis`-related cenvs and pointwise-bisim args, the
     resulting (extended-heap, cons-extended-env) pairs satisfy `WFCtx`-shape
