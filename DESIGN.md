@@ -737,16 +737,16 @@ build made when closing `.set` and `.quote`, not open issues.
 
 ## References
 
-- `docs/Kumar_2016_thesis.pdf` — primary inspiration. Chapter 2
+- [`docs/Kumar_2016_thesis.pdf`](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-879.html) — primary inspiration. Chapter 2
   (shallow→deep translation, refinement invariants), Chapter 3
   (verified compiler, data refinement for closures, fuel-based
   divergence preservation).
-- `docs/CakeML_Kumar_2014.pdf` — the foundational POPL paper.
-- `cakeml/compiler/scheme/` — verified Scheme-to-CakeML compiler
+- [`docs/CakeML_Kumar_2014.pdf`](https://dl.acm.org/doi/10.1145/2578855.2535841) — the foundational POPL paper.
+- [`cakeml/compiler/scheme/`](https://github.com/CakeML/cakeml/tree/master/compiler/scheme) — verified Scheme-to-CakeML compiler
   in HOL4. Source semantics (`scheme_semanticsScript.sml`) is
   structurally close to lean-black's (value type with closures and
   pairs, store with `Mut`/`Pair` entries, `fresh_loc` allocation).
   Useful as a concrete reference for value/env/store handling.
-- `black/black.scm` — Asai et al.'s reference implementation of
+- [`black/black.scm`](https://github.com/readevalprintlove/black/blob/master/black.scm) — Asai et al.'s reference implementation of
   Black. lean-black is a Lean 4 reimplementation of the core
   reflective architecture.
