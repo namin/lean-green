@@ -251,7 +251,8 @@ theorem multnExact_CE_num_case_vacuous
     theorem being closed in `Bisim.lean`. -/
 theorem multnExact_CE_nonnum_case
     (new : Val) (h_admit : multnExactPolicy .builtinBaseApply new = true)
-    (fuel : Nat) (ptable : PolicyTable) (op : Val) (h_op : OpNotNum op)
+    (fuel : Nat) (h_fuel : fuel ≥ 2)
+    (ptable : PolicyTable) (op : Val) (h_op : OpNotNum op)
     (operands : List Val) (metaEnv : Env) (s : RunState) (r : Val) (s' : RunState)
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
@@ -283,20 +284,9 @@ theorem multnExact_CE_nonnum_case
   have h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s') := by
     unfold callAsBaseApply at h_old
     exact h_old
-  -- Self-bisim hypotheses for op and operands (for frame).
-  have hev_cenv : EnvValid cenv s.heap := hv_cenv _ _ _ rfl
-  -- The inner frame call: relate h_app at state s to a b-side call at the
-  -- alloc'd state s_alloc with the same op and operands. This requires:
-  --   - WFCtx metaEnv metaEnv metaEnv s s_alloc
-  --   - ValVis op op (self-extend), ListValVis operands operands (pointwise self-extend)
-  --   - ValValid op, ListValValid operands on both heaps
-  --   - EnvVis metaEnv metaEnv (self-extend)
-  -- These are all derivable from hv_op, hv_operands, h_meta_valid, h_heap,
-  -- via `ValVis_aux_self_extend`, `EnvVis_aux_self_of_valid'`, and the
-  -- `ValValid.heap_extends` / `ListValValid.heap_extends` lifts.
-  --
-  -- Once frame is applied, we have a b-side `applyDirect fuel op operands`
-  -- at the alloc'd state. To complete the proof, we manually unfold:
+  -- The remaining work is the deterministic eval-trace through the closure
+  -- body. With `fuel ≥ 2` (new hypothesis), the trace at outer fuel `fuel + 4`
+  -- unfolds:
   --
   --   callAsBaseApply (fuel + 4) ptable new op operands metaEnv s
   --     = applyDirect (fuel + 4) ptable new [op, listToVal operands] metaEnv s
@@ -311,10 +301,10 @@ theorem multnExact_CE_nonnum_case
   --     = applyDirect fuel op operands metaEnv s_alloc
   --     -- frame.applyDirect relates this to h_app, giving (r_b, s_b') with ValVis r r_b
   --
-  -- Each step in this trace is a direct unfolding using `eval`'s and `applyDirect`'s
-  -- definitions. The full proof is mechanical but ~200 LOC of careful navigation
-  -- through Lean's match-reduction (which doesn't always reduce automatically when
-  -- expressions are partially abstract). Stage-3 work item.
+  -- Each step is a direct unfolding using `eval`'s and `applyDirect`'s
+  -- definitions. The structural prerequisites are established
+  -- (closure shape, `orig`/`num?` indices, fuel bound, `h_app`).
+  -- The mechanical eval-trace itself is open.
   sorry
 
 /-- **Full conditional CE soundness for `multnExactPolicy`** (first
@@ -324,7 +314,8 @@ theorem multnExact_CE_nonnum_case
     `EnvValid metaEnv`). -/
 theorem multnExact_soundForCE_first_install
     (new : Val) (h_admit : multnExactPolicy .builtinBaseApply new = true)
-    (fuel : Nat) (ptable : PolicyTable) (op : Val)
+    (fuel : Nat) (h_fuel : fuel ≥ 2)
+    (ptable : PolicyTable) (op : Val)
     (operands : List Val) (metaEnv : Env) (s : RunState)
     (r : Val) (s' : RunState)
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
@@ -346,7 +337,7 @@ theorem multnExact_soundForCE_first_install
   · have h_op : OpNotNum op := by
       intro n hop_num
       exact hn ⟨n, hop_num⟩
-    exact multnExact_CE_nonnum_case new h_admit fuel ptable op h_op
+    exact multnExact_CE_nonnum_case new h_admit fuel h_fuel ptable op h_op
       operands metaEnv s r s' h_old h_orig h_numq h_heap h_meta_valid
       hv_cenv hv_op hv_operands
 
