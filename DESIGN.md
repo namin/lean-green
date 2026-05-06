@@ -61,6 +61,9 @@ theorem multnExact_soundForCE_first_install :
     (∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap) →
     ValValid op s.heap →
     ListValValid operands s.heap →
+    HeapSetFree s.heap →                  -- ← Path-A side-condition
+    SetFreeVal op →                       -- ← Path-A side-condition
+    SetFreeListVal operands →             -- ← Path-A side-condition
     callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s') →
     ∃ fuel' s'' r',
@@ -88,19 +91,28 @@ state:
 - **`ValValid op`, `ListValValid operands`** — the operator and
   operands the runner passes are valid in the heap (needed for
   `frame.applyDirect` to apply at the inner recursive call)
+- **`HeapSetFree s.heap`, `SetFreeVal op`, `SetFreeListVal operands`** —
+  Path-A side-conditions: the heap and the operator/operands lie
+  in `frame`'s set-free domain. The runner trivially maintains
+  these — it only constructs values from `.lam` bodies and atomic
+  literals, never from `.set`-bearing source. See *Refinements /
+  `.set` and Path A* below for why this restriction is the
+  principled answer rather than a missing proof.
 - **`fuel ≥ 2`** — the closure-body trace evaluates an `evalList`
   over a 2-element argument list, which decrements fuel twice
   internally; `fuel ≥ 2` ensures all those internal calls have
   enough fuel to succeed. Trivially satisfied in practice
   (`Smoke.lean` runs at `fuel = 10000`).
 
-The first two are install-time facts. The remaining ones are
+The first two are install-time facts. The validity hypotheses are
 runtime invariants the runner maintains across any sequence of
 admitted modifications: heap and env validity are inductive on
 the runtime, and the `op`/`operands` validity follows from the
 fact that base-level evaluations on a `HeapValid` heap produce
-`ValValid` values. The fuel bound is a precondition the runner
-must establish at the call site. Each is a 1-3 line predicate.
+`ValValid` values. The Path-A side-conditions are similarly
+inductive on the runner's value-construction protocol. The fuel
+bound is a precondition the runner must establish at the call
+site. Each is a 1-3 line predicate.
 
 **Infrastructure.** The framing theorem that makes the operational
 proof possible:
@@ -132,9 +144,14 @@ outputs from heap and env validity carried in `WFCtx`. The
 args (which requires `EnvValid` on the closure's cenv, which
 unfolds from `ValValid` on the closure value).
 
-Status: complete except for the `.quote` and `.set` cases in `eval`.
-Both are architectural items rather than missing proof work — see
-*Refinements* below.
+Status: **fully closed**, including the previously-open `.quote`
+and `.set` cases in `eval`. The closure of `.set` involved a
+substantive design decision (Path A: restrict `frame`'s domain to
+set-free expressions), documented under *Refinements / `.set` and
+Path A* below. The closure of `.quote` involved a narrower runtime
+restriction on what can appear in a quoted position. Both are
+concessions worth flagging — see the corresponding *Refinements*
+subsections.
 
 `WFCtx`, `HeapExt`, and `ListValVis` are bundling abstractions that
 emerged during the build — see the *Refinements* section below.
@@ -558,44 +575,123 @@ This wasn't anticipated as a separate concern in earlier drafts;
 the foldl structure makes it a substantive piece of infrastructure
 on its own.
 
-### `.quote` and `ClosedVal`
+### `.quote` and `closedValB` (closed)
 
 The `.quote v` case requires `ValVis v v` across two different
 heaps. For atomic Vals (numbers, booleans, etc.), this is trivial;
-for `.cons` and `.closure`, it requires validity hypotheses. The
-honest fix is a `ClosedVal v` predicate restricting quoted Vals to
-those without closure references, or assuming `ValValid v` on both
-heaps. Stage 3 work item — this case currently remains a `sorry`
-in the framing theorem.
+for `.cons` and `.closure`, it requires validity hypotheses or a
+restriction on what can be quoted.
 
-### `.set` and policy bisimulation respect
+**Resolution (chosen):** `eval` checks `closedValB v` at the
+`.quote v` case and returns `none` if it fails. A "closed" value
+is one with no closure references (atoms and cons-trees of atoms);
+formally, `closedValB : Val → Bool` traverses the value and rejects
+`.closure _ _ _`. The framing case for `.quote` then closes via a
+new lemma `closedValB_ValVis_aux : closedValB v = true →
+ValVis_aux n v v h_a h_b` proved by induction on `n` and `v`.
+Companion lemmas `closedValB_ValValid` and `closedValB_SetFreeVal`
+discharge the side validity outputs.
+
+**Concession:** any program that needs to `.quote` a closure-bearing
+value will fail at runtime. None of the demos exercise this — the
+only `.quote` use in the codebase is `.quote .nilV`. The narrower
+alternative (additional hypotheses on `frame` rather than narrowing
+`eval`) was rejected as more invasive: it would have required
+threading a `ValValid v` hypothesis through every `frame.eval`
+recursive case, where `.quote` only appears as a leaf.
+
+### `.set` and Path A (closed)
 
 The `.set` case in framing involves the meta-mutation policy gate:
 when a `set!` targets a meta-env binding, `s.policy oldVal newVal`
-decides whether to admit the mutation. Under bisimulation,
-`oldVal_a` / `oldVal_b` and `newVal_a` / `newVal_b` are only
-`ValVis`-related, not equal — and `s.policy` is a black-box
-`Bool`-valued function, so it can return different verdicts on
-bisim-related-but-unequal inputs.
+decides whether to admit the mutation, and on admission the heap
+is updated *in place* via `Heap.update idx v`.
 
-For framing to go through on `.set`, we'd need to add a
-"policy is bisimulation-respecting" hypothesis to `WFCtx`:
-`∀ x_a x_b y_a y_b, ValVis x_a x_b → ValVis y_a y_b → s.policy x_a y_a = s.policy x_b y_b`.
-This is satisfied by the policies in the verified table (each
-matches on syntactic shape that's preserved by `ValVis`), but
-isn't automatic for arbitrary `BlackPolicy`. Stage-3 work item;
-this case currently remains a `sorry`.
+Earlier drafts of this section identified one obstacle: `s.policy`
+is a black-box `Bool`-valued function, so it can return different
+verdicts on `ValVis`-related-but-unequal inputs across the two
+sides of the bisimulation. Working through the closure surfaced a
+second, deeper obstacle: the framing-theorem postcondition includes
+`HeapExt s_a s_a' := ∃ extras, s_a'.heap = s_a.heap ++ extras`, and
+in-place `Heap.update` is *not* a prefix extension. So the
+postcondition is unprovable for the `.set`-accepted branch
+*regardless* of policy-respect.
+
+A still-deeper observation: even if both obstacles were addressed
+by adding a `BisimSafe` policy hypothesis (admit only `ValVis`-
+related transitions) and by weakening `HeapExt` to a `HeapEvolves`
+relation that admits bisim-respecting updates — *the resulting
+theorem would not apply to `multnExactPolicy`*, because
+`multnExactPolicy` admits replacing `.builtinBaseApply` (a tag
+constructor) with a `.closure` value (a different constructor),
+which are operationally CE-equivalent but structurally non-
+`ValVis`-related by inversion. The very policies that make
+reflective mutation interesting cannot satisfy `BisimSafe`.
+
+The deeper truth: a *structural* framing theorem across reflective
+`.set` is incoherent in this language. `ValVis` is syntactic data
+refinement (Kumar 2016 §3.2); `CE` is operational; reflective
+mutation is, by design, an operational substitution.
+
+**Resolution (chosen): Path A — set-free framing.** Add three new
+predicates:
+
+- `SetFreeExpr : Expr → Prop` — recursively true except at `.set _ _`.
+- `SetFreeVal : Val → Prop` — heap-independent; for closures, body is
+  `SetFreeExpr`.
+- `HeapSetFree : Heap → Prop` — every cell holds a `SetFreeVal`.
+
+Thread them through the four mutual statements of `frame`: take
+`SetFreeExpr` / `SetFreeListExpr` on the source-side of `eval` /
+`evalList`, `SetFreeVal` / `SetFreeListVal` on `applyVia` /
+`applyDirect`'s op and args, and add `HeapSetFree` on both sides
+to `WFCtx`. The `.set _ _` case of `frame.eval` then closes by
+contradiction from `SetFreeExpr (.set _ _) = False`.
+
+The design space considered before settling on Path A:
+
+- **Path A** — set-free framing (chosen). Restrict `frame`'s
+  domain via `SetFreeExpr` / `SetFreeVal` / `HeapSetFree`. The
+  reflective `.set` step lives outside `frame`. The install-
+  protocol theorem (`multnExact_soundForCE_first_install`) uses
+  `frame.applyDirect` only on the post-install user-call, where
+  no `.set` appears.
+- **Path B** — `BisimSafe`-restricted `.set` framing. Define
+  `BlackPolicy.BisimSafe := ∀ old new h, p old new = true → ∀ n,
+  ValVis_aux n old new h h` and add it as a hypothesis to
+  `WFCtx`. Define `HeapEvolves` (admits append + bisim-safe
+  in-place update) and replace `HeapExt` in `frame`'s
+  postcondition. `multnExactPolicy` is *not* `BisimSafe` — it
+  admits `(.builtinBaseApply, .closure ...)` which differ in
+  constructor — so this lemma, while clean and general, has no
+  client in this development. Estimated ~500 LOC of new
+  infrastructure.
+- **Path A + B** — both. Path A as the working framing for
+  `multnExact_soundForCE_first_install`; Path B as a textbook
+  companion for hypothetical structural-extension policies.
+  Highest LOC, no operational gain over Path A alone for the
+  current development.
+
+Path A is the operationally honest answer for this language:
+framing covers the non-reflective sublanguage, and reflective
+`.set` steps are covered separately by the install-protocol
+theorems (`multnExact_soundForCE_first_install` and its kin).
+
+**Concession:** `frame` no longer applies to expressions containing
+`.set`. Reflective mutation steps must be handled outside `frame`,
+which is exactly what the install-protocol theorems already do.
+`multnExact_soundForCE_first_install` now takes three additional
+hypotheses — `HeapSetFree s.heap`, `SetFreeVal op`,
+`SetFreeListVal operands` — that the runner trivially maintains.
 
 ## Risks
 
-- **Sub-cases in framing are tedious.** Each function in the mutual
+- **Sub-cases in framing were tedious.** Each function in the mutual
   block has many cases (`eval` has 13). The pattern is uniform but
-  verbose. The framing theorem is now closed for all cases except
-  `.quote` and `.set` (both architectural items, see *Refinements*).
-  In retrospect the closure case of `applyDirect` was harder than
-  this risk anticipated — it needs `alloc_chain_bisim`, an
-  inductive proof over `args.zip ps` that wasn't obvious from the
-  initial sketch.
+  verbose. The framing theorem is now fully closed; the closure
+  case of `applyDirect` was harder than this risk initially
+  anticipated — it needs `alloc_chain_bisim`, an inductive proof
+  over `args.zip ps` that wasn't obvious from the initial sketch.
 
 - **`match`-equational-lemma generation is brittle.** Lean 4's match
   compiler doesn't always generate equational lemmas for deeply-
@@ -610,17 +706,34 @@ this case currently remains a `sorry`.
   evaluations, their bodies are equal (we're not compiling), so this
   should hold automatically.
 
-- **`.set` framing requires policy-bisim respect.** A genuinely
-  open architectural question — `WFCtx` doesn't currently include
-  any constraint on `s.policy`'s behavior under bisim-related
-  inputs, so the `.set` case of framing can't go through. The
-  policies in `verifiedTable` actually do satisfy the needed
-  property (they pattern-match on syntactic shape), but encoding
-  this in `WFCtx` is a new design decision.
+- **Path-A side-conditions must be maintained by the runner.** The
+  framing-theorem domain restriction documented under *Refinements
+  / `.set` and Path A* requires that `multnExact_soundForCE_first_install`
+  callers establish `HeapSetFree s.heap`, `SetFreeVal op`, and
+  `SetFreeListVal operands`. The runner trivially maintains these
+  in practice (it constructs values only from `.lam` bodies of
+  set-free Black source and atomic literals), but a future
+  extension that allows storing closures with `.set`-bearing
+  bodies in heap-resident cells would have to either (a) ensure
+  those closures aren't passed as user ops to `applyDirect`, or
+  (b) re-extend `frame` along Path B lines (with the caveat that
+  the Path B lemma cannot apply to non-`BisimSafe` policies like
+  `multnExactPolicy`).
 
-The first three are sequencing or implementation risks. The last
-is conceptual and remains open — see the `.set` subsection in
-*Refinements*.
+- **The two-stage proof split is now a load-bearing architectural
+  commitment.** Framing covers the non-reflective sublanguage;
+  reflective `.set` steps are covered by install-protocol
+  theorems. This split is principled (a structural framing theorem
+  across reflective `.set` is *provably false* for the policies
+  that make reflection interesting), but the codebase no longer
+  has a single "the framing theorem" applicable to all programs.
+  Any future development that wants a uniform framing claim across
+  reflective steps would have to revisit the architectural
+  decision recorded under *Refinements / `.set` and Path A*.
+
+The first three are sequencing or implementation risks; the last
+two are concession-tracking entries — they record commitments the
+build made when closing `.set` and `.quote`, not open issues.
 
 ## References
 

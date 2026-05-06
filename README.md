@@ -47,7 +47,7 @@ Three layers:
   are runtime invariants the runner naturally maintains; the three
   Path-A side-conditions (`HeapSetFree` / `SetFreeVal` / `SetFreeListVal`)
   reflect the operationally honest framing-domain restriction
-  documented in `FINDINGS.md`; the fuel bound is trivially satisfied
+  discussed under *Concessions* below; the fuel bound is trivially satisfied
   at the call site (`Smoke.lean` runs at `fuel = 10000`). **Fully
   proved.** The trace lemma `multn_closure_body_unfolds` and the
   composition with `frame.applyDirect` are both closed.
@@ -66,9 +66,9 @@ Three layers:
   `applyPrim_SetFreeVal` (closure-of-prims under set-free args).
   **Fully closed.** `frame.eval`'s `.set` case is discharged by
   contradiction from `SetFreeExpr`; `.quote` is discharged by a
-  runtime `closedValB` check on the quoted value. See `FINDINGS.md`
-  for why the set-free domain restriction is the principled answer
-  for this language rather than a limitation.
+  runtime `closedValB` check on the quoted value. The *Concessions*
+  section below explains why the set-free domain restriction is the
+  principled answer for this language rather than a limitation.
 
 Value relation `ValVis` is syntax-based data refinement à la CakeML
 (Kumar 2016 §3): two closures relate iff their bodies are equal and
@@ -85,26 +85,76 @@ heaps without requiring a prefix relation.
 
 ## Status
 
-**No sorries remain.** All three previously open items are closed:
+**No `sorry`s remain.** All three previously open items in `frame`
+and `Policies.lean` are closed.
 
-- **`.quote v`** in `frame` — closed by introducing a `closedValB`
-  runtime check in `eval`'s `.quote` case, restricting quoted Vals
-  to closure-free values, with a matching `closedValB_ValVis_aux`
-  reflexivity lemma. Existing demos (`Smoke.lean` only quotes
-  `.nilV`) are unaffected.
-- **`.set`** in `frame` — closed by Path A: `frame` is restricted
-  to set-free expressions via `SetFreeExpr` / `SetFreeVal` /
-  `HeapSetFree` predicates threaded through the four mutual
-  statements. The `.set _ _` case discharges by contradiction from
-  `SetFreeExpr (.set _ _) = False`. `FINDINGS.md` documents why
-  this domain restriction is the principled answer (a structural
-  framing theorem across reflective `.set` is provably false for
-  the policies — like `multnExactPolicy` — that make reflective
-  mutation interesting).
-- **`multn_closure_body_unfolds`** — closed by an explicit
-  step-by-step reduction of `callAsBaseApply` on the multn closure
-  through `applyDirect`'s closure-case foldl-alloc, then through
-  `eval` of the `.ifte` cond and else-branches.
+### Concessions made to close them
+
+Two of the three closures changed the development's surface area.
+
+1. **`eval`'s `.quote v` is now restricted to "closed" values.**
+   `eval` checks `closedValB v` at the `.quote v` case and returns
+   `none` if it fails. A closed value is one with no closure
+   references (atoms and cons-trees of atoms). The framing case for
+   `.quote` then closes via `closedValB_ValVis_aux`, since closed
+   values self-bisimulate across any pair of heaps without heap
+   prefix relations.
+
+   *Practical impact:* none. The only `.quote` use in this
+   development is `.quote .nilV` in `Smoke.lean`. Programs that
+   need to quote a closure-bearing value would now fail at runtime
+   rather than silently produce a structurally-unsound value
+   reference.
+
+2. **`frame`'s domain is restricted to set-free expressions.** The
+   four mutual statements of `frame` now take `SetFreeExpr exp` /
+   `SetFreeListExpr exps` / `SetFreeVal op` / `SetFreeListVal args`
+   hypotheses, and `WFCtx` carries `HeapSetFree` on both sides.
+   The `.set _ _` case of `frame.eval` discharges by contradiction
+   from `SetFreeExpr (.set _ _) = False`.
+
+   *Why this is principled, not a regression:* a *structural*
+   framing theorem across reflective `.set` is **provably false**
+   for the policies that make reflective mutation interesting.
+   `multnExactPolicy` admits replacing `.builtinBaseApply` (a tag
+   constructor) with a `.closure` value (a different constructor) —
+   these are operationally equivalent (CE-extending) but structurally
+   non-`ValVis`-related by inversion. The very policies that make
+   reflective mutation meaningful cannot satisfy a "policy admits
+   only `ValVis`-related transitions" hypothesis. The principled
+   factoring is: framing covers the non-reflective sublanguage, and
+   reflective `.set` steps are covered separately by install-
+   protocol theorems like `multnExact_soundForCE_first_install`
+   (which uses framing on the *post-install user-call*, where no
+   `.set` appears). `DESIGN.md`'s *Refinements / `.set` and Path A*
+   subsection walks through the argument in detail.
+
+   *Practical impact on the headline theorem:*
+   `multnExact_soundForCE_first_install` now takes three
+   additional hypotheses — `HeapSetFree s.heap`, `SetFreeVal op`,
+   `SetFreeListVal operands` — that any sensible runner trivially
+   maintains. The runner only ever calls user ops (prims or
+   set-free closures) on heap-resident values that came from
+   `.lam` / atomic literals.
+
+### What's closed and how
+
+- **`.quote v`** — runtime `closedValB` gate in `eval` +
+  `closedValB_ValVis_aux` / `closedValB_ValValid` /
+  `closedValB_SetFreeVal` reflexivity lemmas.
+- **`.set`** — Path A (set-free domain restriction). ~150 LOC of
+  new predicates, preservation lemmas, and threading through ~20
+  `frame` cases. `WFCtx` extended with two `HeapSetFree` fields;
+  every `WFCtx` constructor updated. See `DESIGN.md` /
+  *Refinements / `.set` and Path A* for the full argument.
+- **`multn_closure_body_unfolds`** — explicit step-by-step
+  reduction. The deterministic eval-trace through the multn
+  closure body unfolds to `applyDirect fuel ptable op operands`
+  at the alloc'd state via a chain of `simp only` calls keyed
+  on the four heap+env lookup facts. No infrastructure friction
+  (the `(s.heap ++ [v]).length` vs `s.heap.length + 1` issue
+  noted in earlier comments was avoidable with the right
+  reduction order).
 
 ## Layout
 
