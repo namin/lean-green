@@ -1862,7 +1862,7 @@ theorem EnvVis_cons (x : String) (idx_a idx_b : Nat)
 /-! ## Closure-call alloc-chain invariant -/
 
 /-- The body of the closure-call foldl in `applyDirect`. -/
-private def allocStep (acc : Heap × Env) (vp : Val × String) : Heap × Env :=
+def allocStep (acc : Heap × Env) (vp : Val × String) : Heap × Env :=
   let (hh, ee) := acc
   let (hh', idx) := hh.alloc vp.1
   (hh', .cons vp.2 idx ee)
