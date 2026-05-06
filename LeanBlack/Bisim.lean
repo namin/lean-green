@@ -486,6 +486,44 @@ theorem EnvVis_aux_extends (n : Nat) :
 
 end
 
+/-! ## Bool false characterization -/
+
+/-- `ValVis` on `.bool false` is two-sided: if either side is
+    `.bool false`, so is the other. Used by the `.ifte` framing
+    case to argue that both calls take the same branch. -/
+theorem ValVis_bool_false_iff (cv_a cv_b : Val) (h_a h_b : Heap)
+    (h_vv : ValVis cv_a cv_b h_a h_b) :
+    cv_a = .bool false ↔ cv_b = .bool false := by
+  constructor
+  · intro h
+    subst h
+    have h1 := h_vv 1
+    cases cv_b with
+    | bool b => cases b with
+                | false => rfl
+                | true  => simp [ValVis_aux] at h1
+    | num _            => simp [ValVis_aux] at h1
+    | nilV             => simp [ValVis_aux] at h1
+    | cons _ _         => simp [ValVis_aux] at h1
+    | sym _            => simp [ValVis_aux] at h1
+    | closure _ _ _    => simp [ValVis_aux] at h1
+    | prim _           => simp [ValVis_aux] at h1
+    | builtinBaseApply => simp [ValVis_aux] at h1
+  · intro h
+    subst h
+    have h1 := h_vv 1
+    cases cv_a with
+    | bool b => cases b with
+                | false => rfl
+                | true  => simp [ValVis_aux] at h1
+    | num _            => simp [ValVis_aux] at h1
+    | nilV             => simp [ValVis_aux] at h1
+    | cons _ _         => simp [ValVis_aux] at h1
+    | sym _            => simp [ValVis_aux] at h1
+    | closure _ _ _    => simp [ValVis_aux] at h1
+    | prim _           => simp [ValVis_aux] at h1
+    | builtinBaseApply => simp [ValVis_aux] at h1
+
 /-! ## Universal-depth heap-extension lemmas -/
 
 /-- `ValVis` (universal over depths) preserved under heap extension. -/
@@ -763,12 +801,108 @@ theorem frame : ∀ n, FrameStmt n := by
                 · simp [eval]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => trivial
-            | cons _ _ =>
-              -- Recursive cases need EnvVis propagation through state
-              -- extension via `EnvVis_aux_extends`. Stage 3.
-              sorry
-        -- Stage-3 recursive cases.
-        | ifte _ _ _   => sorry
+            | cons e rest =>
+                cases rest with
+                | nil =>
+                    -- exps = [e]: eval (k+1) (.seq [e]) reduces to eval k e
+                    simp only [eval] at h_eval
+                    obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he_a, h_he_b,
+                            h_env', h_meta'⟩ :=
+                      ih_eval ptable e env_a env_b metaEnv s_a s_b r_a s_a'
+                        h_ctx h_env h_meta h_eval
+                    refine ⟨r_b, s_b', ?_, h_vv, h_ctx', h_he_a, h_he_b, h_env', h_meta'⟩
+                    simp [eval, h_eval_b]
+                | cons e2 rest2 =>
+                    -- exps = e :: e2 :: rest2: eval e then recurse on .seq (e2 :: rest2)
+                    simp only [eval] at h_eval
+                    cases he : eval k ptable e env_a metaEnv s_a with
+                    | none => rw [he] at h_eval; simp at h_eval
+                    | some pr =>
+                        obtain ⟨v_e, s_a_inner⟩ := pr
+                        rw [he] at h_eval
+                        simp only at h_eval
+                        obtain ⟨v_e_b, s_b_inner, h_eval_e_b, _h_vv_e, h_ctx_inner,
+                                h_he_a_inner, h_he_b_inner, h_env_inner, h_meta_inner⟩ :=
+                          ih_eval ptable e env_a env_b metaEnv s_a s_b v_e s_a_inner
+                            h_ctx h_env h_meta he
+                        obtain ⟨r_b, s_b', h_eval_seq_b, h_vv, h_ctx', h_he_a', h_he_b',
+                                h_env', h_meta'⟩ :=
+                          ih_eval ptable (.seq (e2 :: rest2)) env_a env_b metaEnv
+                            s_a_inner s_b_inner r_a s_a'
+                            h_ctx_inner h_env_inner h_meta_inner h_eval
+                        refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
+                                HeapExt.trans h_he_a_inner h_he_a',
+                                HeapExt.trans h_he_b_inner h_he_b',
+                                h_env', h_meta'⟩
+                        simp [eval, h_eval_e_b, h_eval_seq_b]
+        | ifte c t e =>
+            simp only [eval] at h_eval
+            cases hc : eval k ptable c env_a metaEnv s_a with
+            | none => rw [hc] at h_eval; simp at h_eval
+            | some pr =>
+                obtain ⟨cv_a, s_c_a⟩ := pr
+                rw [hc] at h_eval
+                obtain ⟨cv_b, s_c_b, h_eval_c_b, h_vv_c, h_ctx_c, h_he_c_a, h_he_c_b,
+                        h_env_c, h_meta_c⟩ :=
+                  ih_eval ptable c env_a env_b metaEnv s_a s_b cv_a s_c_a
+                    h_ctx h_env h_meta hc
+                have h_iff : cv_a = .bool false ↔ cv_b = .bool false :=
+                  ValVis_bool_false_iff cv_a cv_b s_c_a.heap s_c_b.heap h_vv_c
+                by_cases hcv : cv_a = .bool false
+                · -- both sides take else-branch
+                  have h_cv_b : cv_b = .bool false := h_iff.mp hcv
+                  subst hcv
+                  simp only at h_eval
+                  -- h_eval : eval k ptable e env_a metaEnv s_c_a = some (r_a, s_a')
+                  obtain ⟨r_b, s_b', h_eval_e_b, h_vv, h_ctx', h_he_a', h_he_b',
+                          h_env', h_meta'⟩ :=
+                    ih_eval ptable e env_a env_b metaEnv s_c_a s_c_b r_a s_a'
+                      h_ctx_c h_env_c h_meta_c h_eval
+                  refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
+                          HeapExt.trans h_he_c_a h_he_a',
+                          HeapExt.trans h_he_c_b h_he_b',
+                          h_env', h_meta'⟩
+                  simp [eval, h_eval_c_b, h_cv_b, h_eval_e_b]
+                · -- both sides take then-branch
+                  have h_cv_b_ne : cv_b ≠ .bool false := fun h => hcv (h_iff.mpr h)
+                  -- h_eval reduces via the catchall arm to: eval k ptable t ... = some
+                  have h_eval_t : eval k ptable t env_a metaEnv s_c_a = some (r_a, s_a') := by
+                    cases cv_a with
+                    | bool b =>
+                        cases b with
+                        | false => exact absurd rfl hcv
+                        | true  => exact h_eval
+                    | num _            => exact h_eval
+                    | nilV             => exact h_eval
+                    | cons _ _         => exact h_eval
+                    | sym _            => exact h_eval
+                    | closure _ _ _    => exact h_eval
+                    | prim _           => exact h_eval
+                    | builtinBaseApply => exact h_eval
+                  obtain ⟨r_b, s_b', h_eval_t_b, h_vv, h_ctx', h_he_a', h_he_b',
+                          h_env', h_meta'⟩ :=
+                    ih_eval ptable t env_a env_b metaEnv s_c_a s_c_b r_a s_a'
+                      h_ctx_c h_env_c h_meta_c h_eval_t
+                  refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
+                          HeapExt.trans h_he_c_a h_he_a',
+                          HeapExt.trans h_he_c_b h_he_b',
+                          h_env', h_meta'⟩
+                  -- Goal: eval (k+1) (.ifte c t e) env_b metaEnv s_b = some (r_b, s_b')
+                  -- Reduces to match eval k c env_b metaEnv s_b with ...
+                  -- = match (some (cv_b, s_c_b)) with ... → t branch (since cv_b ≠ .bool false)
+                  simp only [eval, h_eval_c_b]
+                  cases cv_b with
+                  | bool b =>
+                      cases b with
+                      | false => exact absurd rfl h_cv_b_ne
+                      | true  => exact h_eval_t_b
+                  | num _            => exact h_eval_t_b
+                  | nilV             => exact h_eval_t_b
+                  | cons _ _         => exact h_eval_t_b
+                  | sym _            => exact h_eval_t_b
+                  | closure _ _ _    => exact h_eval_t_b
+                  | prim _           => exact h_eval_t_b
+                  | builtinBaseApply => exact h_eval_t_b
         | app _        => sorry
         | primApp _ _  => sorry
         | set _ _      => sorry
