@@ -129,6 +129,20 @@ def mulConsList : Val → Option Int
   | .cons (.num n) rest => (mulConsList rest).map (n * ·)
   | _                   => none
 
+/-- Heap-independent values: contain no closure references, and so
+    relate trivially to themselves under any pair of heaps. Used to
+    constrain `.quote` to literals, which is the only practical
+    use-case (programs only `.quote` atoms / cons-lists of atoms). -/
+def closedValB : Val → Bool
+  | .num _              => true
+  | .bool _             => true
+  | .nilV               => true
+  | .sym _              => true
+  | .prim _             => true
+  | .builtinBaseApply   => true
+  | .cons x y           => closedValB x && closedValB y
+  | .closure _ _ _      => false
+
 /-- Each primitive's behavior is split into its own helper. The top-level
     `applyPrim` then dispatches on `name`. This shape lets Lean's match
     compiler generate equational lemmas for each helper independently
@@ -216,7 +230,7 @@ def eval (fuel : Nat) (ptable : PolicyTable) (exp : Expr)
     match exp with
     | .num i        => some (.num i, s)
     | .bool b       => some (.bool b, s)
-    | .quote v      => some (v, s)
+    | .quote v      => if closedValB v then some (v, s) else none
     | .var x        =>
         match env.lookup x with
         | some idx => match s.heap[idx]? with

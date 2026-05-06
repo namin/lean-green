@@ -328,6 +328,42 @@ theorem ValVis_aux_self_extend (n : Nat) :
           intro v' hv_valid
           exact ih v' h_a extras hh hv_valid
 
+/-! ## Closed values: heap-independent self-bisimulation
+
+    A `closedValB`-true value contains no closure references, so it
+    `ValValid`s in any heap and bisimulates itself across any pair
+    of heaps. This is what justifies the `.quote v` case in `frame`:
+    `eval` only admits `.quote v` when `closedValB v = true`, so the
+    quoted value relates trivially to itself. -/
+
+theorem closedValB_ValValid : ∀ (v : Val) (h : Heap),
+    closedValB v = true → ValValid v h
+  | .num _,            _, _ => trivial
+  | .bool _,           _, _ => trivial
+  | .nilV,             _, _ => trivial
+  | .sym _,            _, _ => trivial
+  | .prim _,           _, _ => trivial
+  | .builtinBaseApply, _, _ => trivial
+  | .cons x y,         h, hc => by
+      simp [closedValB, Bool.and_eq_true] at hc
+      exact ⟨closedValB_ValValid x h hc.1, closedValB_ValValid y h hc.2⟩
+  | .closure _ _ _,    _, hc => by simp [closedValB] at hc
+
+theorem closedValB_ValVis_aux : ∀ (n : Nat) (v : Val) (h_a h_b : Heap),
+    closedValB v = true → ValVis_aux n v v h_a h_b
+  | 0,     _,                   _,   _,   _   => trivial
+  | _ + 1, .num _,              _,   _,   _   => rfl
+  | _ + 1, .bool _,             _,   _,   _   => rfl
+  | _ + 1, .nilV,               _,   _,   _   => trivial
+  | _ + 1, .sym _,              _,   _,   _   => rfl
+  | _ + 1, .prim _,             _,   _,   _   => rfl
+  | _ + 1, .builtinBaseApply,   _,   _,   _   => trivial
+  | k + 1, .cons x y,           h_a, h_b, hc => by
+      simp [closedValB, Bool.and_eq_true] at hc
+      exact ⟨closedValB_ValVis_aux k x h_a h_b hc.1,
+             closedValB_ValVis_aux k y h_a h_b hc.2⟩
+  | _ + 1, .closure _ _ _,      _,   _,   hc => by simp [closedValB] at hc
+
 /-! ## Heap-extension lemmas
 
     The key building block for framing: bisimulation between
@@ -2231,12 +2267,23 @@ theorem frame : ∀ n, FrameStmt n := by
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
         | quote v =>
-            -- Stage-3 work item: needs `ValVis v v` for arbitrary
-            -- quoted v. True for "closed" Vals (no closure refs);
-            -- for general quoted Vals would need ValValid + HeapValid
-            -- on both sides plus a `ValVis_aux_self_extend`-style
-            -- lemma adapted to two-sided heap equality.
-            sorry
+            -- `eval` only admits `.quote v` when `closedValB v = true`;
+            -- closed values self-bisimulate across any heap pair, so the
+            -- case closes via `closedValB_ValVis_aux` and `closedValB_ValValid`.
+            simp only [eval] at h_eval
+            split at h_eval
+            · rename_i h_closed
+              simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+              obtain ⟨h_r, h_s⟩ := h_eval
+              subst h_r; subst h_s
+              refine ⟨v, s_b, ?_, ?_, h_ctx,
+                      HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
+                      closedValB_ValValid v s_a.heap h_closed,
+                      closedValB_ValValid v s_b.heap h_closed⟩
+              · simp [eval, h_closed]
+              · intro depth
+                exact closedValB_ValVis_aux depth v s_a.heap s_b.heap h_closed
+            · simp at h_eval
         | var x =>
             simp only [eval] at h_eval
             cases hl_a : env_a.lookup x with
