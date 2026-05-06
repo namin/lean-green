@@ -368,9 +368,185 @@ private def FrameStmt (n : Nat) : Prop :=
       StateExt s_a' s_b')
 
 /-- The main framing theorem. Joint statement, mutually proved by
-    induction on fuel. **Stage 3 work item**: the substantive cases
-    require state-extension preservation lemmas for `ValVis_aux` and
-    `EnvVis_aux` plus careful threading of invariants. The leaf
-    cases (literals, vars) are straightforward. -/
+    induction on fuel.
+
+    Status: zero case + eval's leaf cases (literals, var, lam,
+    installPolicy) proved here. Recursive cases (.ifte, .app,
+    .primApp, .set, .em, .letE, .seq) and the other three function
+    cases (evalList, applyVia, applyDirect) follow the same template
+    that closed `fuel_mono_succ` in lean-grey, threading `ValVis` /
+    `EnvVis` invariants through inner calls. ~400 LOC remaining. -/
 theorem frame : ∀ n, FrameStmt n := by
-  sorry
+  intro n
+  induction n with
+  | zero =>
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ h; simp [eval] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ h; simp [evalList] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyVia] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyDirect] at h
+  | succ k ih =>
+      obtain ⟨ih_eval, ih_evalList, ih_applyVia, ih_applyDirect⟩ := ih
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · -- eval (k+1)
+        intro ptable exp env_a env_b metaEnv s_a s_b r_a s_a' h_state h_env h_meta h_eval
+        cases exp with
+        | num i =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            refine ⟨.num i, s_b, ?_, ?_, h_state⟩
+            · simp [eval]
+            · intro depth
+              cases depth with
+              | zero => trivial
+              | succ _ => rfl
+        | bool b =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            refine ⟨.bool b, s_b, ?_, ?_, h_state⟩
+            · simp [eval]
+            · intro depth
+              cases depth with
+              | zero => trivial
+              | succ _ => rfl
+        | quote v =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            refine ⟨v, s_b, ?_, ?_, h_state⟩
+            · simp [eval]
+            · -- ValVis v v s_a.heap s_b.heap : need this for any quoted v.
+              -- True because state is unchanged in both calls and v is
+              -- literally quoted (no heap dependence).
+              -- Statement requires bisimulation between v and v across
+              -- the two heaps. Holds when v is *closed* (no heap refs)
+              -- which is the case for all quoted Vals in practice;
+              -- more generally needs ValValid v on both heaps.
+              sorry
+        | var x =>
+            simp only [eval] at h_eval
+            cases hl_a : env_a.lookup x with
+            | none => rw [hl_a] at h_eval; simp at h_eval
+            | some i_a =>
+                rw [hl_a] at h_eval
+                simp only at h_eval
+                cases hp_a : s_a.heap[i_a]? with
+                | none => rw [hp_a] at h_eval; simp at h_eval
+                | some v_a =>
+                    rw [hp_a] at h_eval
+                    simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                    obtain ⟨h_r, h_s⟩ := h_eval
+                    subst h_r; subst h_s
+                    -- Extract i_b and v_b from EnvVis_aux at depth 1.
+                    have h_x1 := h_env 1 x
+                    rw [hl_a] at h_x1
+                    cases hl_b : env_b.lookup x with
+                    | none =>
+                        rw [hl_b] at h_x1; simp only [EnvVis_aux] at h_x1
+                    | some i_b =>
+                        rw [hl_b] at h_x1
+                        simp only at h_x1
+                        rw [hp_a] at h_x1
+                        cases hp_b : s_b.heap[i_b]? with
+                        | none =>
+                            rw [hp_b] at h_x1; simp only at h_x1
+                        | some v_b =>
+                            refine ⟨v_b, s_b, ?_, ?_, h_state⟩
+                            · simp [eval, hl_b, hp_b]
+                            · -- ValVis v_a v_b at every depth, from h_env at every depth.
+                              intro depth
+                              have h_x_d := h_env depth x
+                              rw [hl_a, hl_b] at h_x_d
+                              simp only at h_x_d
+                              rw [hp_a, hp_b] at h_x_d
+                              exact h_x_d
+        | lam ps body =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            refine ⟨.closure ps body env_b, s_b, ?_, ?_, h_state⟩
+            · simp [eval]
+            · -- ValVis (.closure ps body env_a) (.closure ps body env_b) ...
+              intro depth
+              cases depth with
+              | zero => trivial
+              | succ k' =>
+                  -- ValVis_aux (k'+1) on closures unfolds to body=body
+                  -- and EnvVis_aux k' on the cenvs.
+                  refine ⟨rfl, rfl, ?_⟩
+                  -- EnvVis_aux k' env_a env_b s_a.heap s_b.heap
+                  exact h_env k'
+        | installPolicy idx =>
+            simp only [eval] at h_eval
+            cases hp : ptable[idx]? with
+            | none =>
+                rw [hp] at h_eval
+                simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                refine ⟨.bool false, s_b, ?_, ?_, h_state⟩
+                · simp [eval, hp]
+                · intro depth
+                  cases depth with | zero => trivial | succ _ => rfl
+            | some newPolicy =>
+                rw [hp] at h_eval
+                simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                refine ⟨.bool true, { s_b with policy := newPolicy }, ?_, ?_, ?_⟩
+                · simp [eval, hp]
+                · intro depth
+                  cases depth with | zero => trivial | succ _ => rfl
+                · -- StateExt {s_a with policy := newPolicy} {s_b with policy := newPolicy}
+                  obtain ⟨_, extras, hex⟩ := h_state
+                  exact ⟨rfl, extras, hex⟩
+        | em body =>
+            -- eval (k+1) ptable (.em body) env metaEnv s = eval k body metaEnv metaEnv s
+            simp only [eval] at h_eval
+            obtain ⟨r_b, s_b', h_eval_b, h_vv, h_state'⟩ :=
+              ih_eval ptable body metaEnv metaEnv metaEnv s_a s_b r_a s_a'
+                h_state h_meta h_meta h_eval
+            refine ⟨r_b, s_b', ?_, h_vv, h_state'⟩
+            simp [eval, h_eval_b]
+        | seq exps =>
+            cases exps with
+            | nil =>
+                simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                refine ⟨.nilV, s_b, ?_, ?_, h_state⟩
+                · simp [eval]
+                · intro depth
+                  cases depth with | zero => trivial | succ _ => trivial
+            | cons e rest =>
+                cases rest with
+                | nil =>
+                    -- eval (k+1) (.seq [e]) = eval k e
+                    simp only [eval] at h_eval
+                    obtain ⟨r_b, s_b', h_eval_b, h_vv, h_state'⟩ :=
+                      ih_eval ptable e env_a env_b metaEnv s_a s_b r_a s_a'
+                        h_state h_env h_meta h_eval
+                    refine ⟨r_b, s_b', ?_, h_vv, h_state'⟩
+                    simp [eval, h_eval_b]
+                | cons e2 rest2 =>
+                    -- eval (k+1) (.seq (e :: e2 :: rest2)) =
+                    --   match eval k e ... with
+                    --   | none => none
+                    --   | some (_, s') => eval k (.seq (e2 :: rest2)) env metaEnv s'
+                    -- Stage 3 work item: needs `EnvVis` propagation through
+                    -- `s_a → s_a'` (env still visible after eval extends state).
+                    sorry
+        -- Stage-3 recursive cases.
+        | ifte _ _ _   => sorry
+        | app _        => sorry
+        | primApp _ _  => sorry
+        | set _ _      => sorry
+        | letE _ _ _   => sorry
+      · -- evalList (k+1)
+        sorry
+      · -- applyVia (k+1)
+        sorry
+      · -- applyDirect (k+1)
+        sorry
