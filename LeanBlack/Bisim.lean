@@ -193,3 +193,184 @@ theorem EnvVis_aux_self_of_valid (n : Nat) (cenv : Env)
       obtain ⟨v, hv_eq⟩ := h_some
       rw [hv_eq, h_eq, hv_eq]
       exact ih v
+
+/-- A `Val`'s references are within the heap. **Shallow** validity:
+    closure cenvs reference valid heap indices, but we don't recursively
+    require the referenced values to also be valid (that's a heap-level
+    invariant — see `HeapValid` below). -/
+def ValValid : Val → Heap → Prop
+  | .num _,            _ => True
+  | .bool _,           _ => True
+  | .nilV,             _ => True
+  | .sym _,            _ => True
+  | .prim _,           _ => True
+  | .builtinBaseApply, _ => True
+  | .cons x y,         h => ValValid x h ∧ ValValid y h
+  | .closure _ _ cenv, h => EnvValid cenv h
+
+theorem ValValid.heap_extends : ∀ (v : Val) {h_a h_b : Heap},
+    ValValid v h_a → (∃ extras, h_b = h_a ++ extras) →
+    ValValid v h_b
+  | .num _,            _, _, _,  _    => trivial
+  | .bool _,           _, _, _,  _    => trivial
+  | .nilV,             _, _, _,  _    => trivial
+  | .sym _,            _, _, _,  _    => trivial
+  | .prim _,           _, _, _,  _    => trivial
+  | .builtinBaseApply, _, _, _,  _    => trivial
+  | .cons x y,         _, _, hv, hext =>
+      ⟨ValValid.heap_extends x hv.1 hext,
+       ValValid.heap_extends y hv.2 hext⟩
+  | .closure _ _ _, _, _, hv, hext =>
+      EnvValid.heap_extends hv hext
+
+/-- A heap is **deeply valid** if every value in it is `ValValid` in
+    that heap. This is the runtime invariant maintained by `eval`:
+    `alloc` only adds values that were `ValValid` in the heap at
+    the time of allocation; `update` only replaces a cell with a
+    value `ValValid` in the current heap. -/
+def HeapValid (h : Heap) : Prop :=
+  ∀ (i : Nat) (v : Val), h[i]? = some v → ValValid v h
+
+/-- An env is **deeply valid** in a deeply-valid heap if every name
+    it binds points to a cell holding a `ValValid` value. Follows
+    from `EnvValid` + `HeapValid`. -/
+theorem EnvValid.implies_lookups_valid {env : Env} {h : Heap}
+    (hv : EnvValid env h) (hh : HeapValid h) :
+    ∀ x i, env.lookup x = some i → ∃ v, h[i]? = some v ∧ ValValid v h := by
+  intro x i hl
+  have h_lt : i < h.length := hv x i hl
+  have h_some : ∃ v, h[i]? = some v := by
+    cases hp : h[i]? with
+    | none =>
+        exfalso
+        have := List.getElem?_eq_none_iff.mp hp
+        omega
+    | some v => exact ⟨v, rfl⟩
+  obtain ⟨v, hp⟩ := h_some
+  exact ⟨v, hp, hh i v hp⟩
+
+/-- Strengthened helper: like `EnvVis_aux_self_of_valid` but the
+    inductive-step hypothesis is only invoked on values that are
+    `ValValid` in `h_a` (which holds for heap lookups via
+    `HeapValid`). -/
+theorem EnvVis_aux_self_of_valid' (n : Nat) (cenv : Env)
+    (h_a h_b : Heap) (hv : EnvValid cenv h_a)
+    (hh : HeapValid h_a)
+    (hext : ∃ extras, h_b = h_a ++ extras)
+    (ih : ∀ v, ValValid v h_a → ValVis_aux n v v h_a h_b) :
+    EnvVis_aux n cenv cenv h_a h_b := by
+  obtain ⟨extras, hex⟩ := hext
+  intro x
+  cases hl : cenv.lookup x with
+  | none      => simp
+  | some idx  =>
+      have h_lt : idx < h_a.length := hv x idx hl
+      simp only [hl]
+      have h_eq : h_b[idx]? = h_a[idx]? := by
+        rw [hex]; exact getElem?_prefix h_a extras idx h_lt
+      have h_some : ∃ v, h_a[idx]? = some v := by
+        cases hp : h_a[idx]? with
+        | none =>
+            exfalso
+            have := List.getElem?_eq_none_iff.mp hp
+            omega
+        | some v => exact ⟨v, rfl⟩
+      obtain ⟨v, hv_eq⟩ := h_some
+      have hv_valid : ValValid v h_a := hh idx v hv_eq
+      rw [hv_eq, h_eq, hv_eq]
+      exact ih v hv_valid
+
+/-- A value bisimilar to itself under heap extension, given validity.
+
+    Proved by induction on depth `n`: the closure case at depth `n+1`
+    needs the inductive hypothesis (at depth `n`) for the values
+    looked up via cenv's bindings. By `HeapValid`, those values are
+    `ValValid` in `h_a`, so the IH applies. -/
+theorem ValVis_aux_self_extend (n : Nat) :
+    ∀ (v : Val) (h_a : Heap) (extras : Heap),
+      HeapValid h_a → ValValid v h_a →
+      ValVis_aux n v v h_a (h_a ++ extras) := by
+  induction n with
+  | zero => intros; trivial
+  | succ k ih =>
+      intro v h_a extras hh hv
+      cases v with
+      | num _    => rfl
+      | bool _   => rfl
+      | nilV     => trivial
+      | sym _    => rfl
+      | prim _   => rfl
+      | builtinBaseApply => trivial
+      | cons x y =>
+          obtain ⟨hx, hy⟩ := hv
+          exact ⟨ih x h_a extras hh hx, ih y h_a extras hh hy⟩
+      | closure ps body cenv =>
+          refine ⟨rfl, rfl, ?_⟩
+          apply EnvVis_aux_self_of_valid' k cenv h_a (h_a ++ extras) hv hh
+              ⟨extras, rfl⟩
+          intro v' hv_valid
+          exact ih v' h_a extras hh hv_valid
+
+/-! ## Framing theorem (joint mutual statement)
+
+    The headline statement: each function in the four-way mutual
+    block preserves bisimulation under state extension and env
+    visibility. Mutually proved by induction on fuel; the proof
+    structure mirrors `fuel_mono_succ` (when that lemma is added),
+    with the additional invariant that `ValVis`/`EnvVis` are
+    threaded through inner calls.
+
+    State and prove incrementally — leaf cases are clean; recursive
+    cases follow the `rw [F.eq_def]; simp only; cases ...; ih ...`
+    template.
+-/
+
+private def FrameStmt (n : Nat) : Prop :=
+  (∀ (ptable : PolicyTable) (exp : Expr) (env_a env_b metaEnv : Env)
+     (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
+    StateExt s_a s_b →
+    EnvVis env_a env_b s_a.heap s_b.heap →
+    EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+    eval n ptable exp env_a metaEnv s_a = some (r_a, s_a') →
+    ∃ r_b s_b',
+      eval n ptable exp env_b metaEnv s_b = some (r_b, s_b') ∧
+      ValVis r_a r_b s_a'.heap s_b'.heap ∧
+      StateExt s_a' s_b') ∧
+  (∀ (ptable : PolicyTable) (exps : List Expr) (env_a env_b metaEnv : Env)
+     (s_a s_b : RunState) (rs_a : List Val) (s_a' : RunState),
+    StateExt s_a s_b →
+    EnvVis env_a env_b s_a.heap s_b.heap →
+    EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+    evalList n ptable exps env_a metaEnv s_a = some (rs_a, s_a') →
+    ∃ rs_b s_b',
+      evalList n ptable exps env_b metaEnv s_b = some (rs_b, s_b') ∧
+      rs_a.length = rs_b.length ∧
+      StateExt s_a' s_b') ∧
+  (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
+     (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
+    StateExt s_a s_b →
+    ValVis op_a op_b s_a.heap s_b.heap →
+    EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+    applyVia n ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
+    ∃ r_b s_b',
+      applyVia n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
+      ValVis r_a r_b s_a'.heap s_b'.heap ∧
+      StateExt s_a' s_b') ∧
+  (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
+     (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
+    StateExt s_a s_b →
+    ValVis op_a op_b s_a.heap s_b.heap →
+    EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+    applyDirect n ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
+    ∃ r_b s_b',
+      applyDirect n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
+      ValVis r_a r_b s_a'.heap s_b'.heap ∧
+      StateExt s_a' s_b')
+
+/-- The main framing theorem. Joint statement, mutually proved by
+    induction on fuel. **Stage 3 work item**: the substantive cases
+    require state-extension preservation lemmas for `ValVis_aux` and
+    `EnvVis_aux` plus careful threading of invariants. The leaf
+    cases (literals, vars) are straightforward. -/
+theorem frame : ∀ n, FrameStmt n := by
+  sorry
