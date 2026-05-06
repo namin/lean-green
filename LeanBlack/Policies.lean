@@ -208,9 +208,14 @@ def OrigBoundIn (heap : Heap) (old : Val) (new : Val) : Prop :=
 
 /-- The closure's captured env binds `"num?"` to the `.prim "num?"`
     value. The install protocol guarantees this because the closure
-    is created with `cenv ⊇ initBaseEnv` (which has `"num?"` bound). -/
-def NumQBoundIn (heap : Heap) (cenv : Env) : Prop :=
-  ∃ idx, cenv.lookup "num?" = some idx ∧ heap[idx]? = some (.prim "num?")
+    is created with `cenv ⊇ initBaseEnv` (which has `"num?"` bound).
+    Stated on a `Val` (parallel shape to `OrigBoundIn`) so it lifts
+    cleanly into `InstallFacts`. -/
+def NumQBoundIn (heap : Heap) (new : Val) : Prop :=
+  ∃ ps body cenv idx,
+    new = .closure ps body cenv ∧
+    cenv.lookup "num?" = some idx ∧
+    heap[idx]? = some (.prim "num?")
 
 /-- Both install-time facts the runner must establish when it admits
     a `multnExactPolicy`-shaped modification: the new closure's cenv
@@ -218,7 +223,7 @@ def NumQBoundIn (heap : Heap) (cenv : Env) : Prop :=
     `"num?"` to `.prim "num?"`. -/
 structure InstallFacts (new : Val) (heap : Heap) : Prop where
   orig : OrigBoundIn heap .builtinBaseApply new
-  numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn heap cenv
+  numq : NumQBoundIn heap new
 
 /-- Runtime well-formedness invariants the runner inductively
     maintains: heaps and metaEnv are validity-closed, the captured
@@ -446,10 +451,9 @@ theorem multnExact_CE_nonnum_case
   injection h_eq_o with hps_eq hbody_eq hcenv_eq
   subst hps_eq; subst hbody_eq; subst hcenv_eq
   -- Extract `num?`'s index from h_numq.
-  obtain ⟨_, _, _, hnew_eq, hnumq⟩ := h_numq
+  obtain ⟨_, _, _, idx_n, hnew_eq, h_lookup_n, h_heap_n⟩ := h_numq
   injection hnew_eq with _ _ hcenv_eq2
   subst hcenv_eq2
-  obtain ⟨idx_n, h_lookup_n, h_heap_n⟩ := hnumq
   -- callAsBaseApply on `.builtinBaseApply` reduces to applyDirect.
   have h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s') := by
     unfold callAsBaseApply at h_old

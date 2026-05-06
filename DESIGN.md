@@ -122,16 +122,22 @@ runner's value-construction protocol. The fuel bound is a
 precondition the runner must establish at the call site.
 
 **Infrastructure.** The framing theorem that makes the operational
-proof possible:
+proof possible (`applyDirect` branch shown; the four mutual
+statements share the same shape):
 
 ```
 theorem applyDirect_frame :
-  WFCtx metaEnv metaEnv metaEnv s_a s_b →
+  WFCtx metaEnv metaEnv metaEnv s_a s_b →             -- bundles HeapValid,
+                                                       --   EnvValid metaEnv,
+                                                       --   HeapSetFree (both sides),
+                                                       --   StateExt
   ValVis op_a op_b s_a.heap s_b.heap →
   ListValVis args_a args_b s_a.heap s_b.heap →
   EnvVis metaEnv metaEnv s_a.heap s_b.heap →
   ValValid op_a s_a.heap → ValValid op_b s_b.heap →
   ListValValid args_a s_a.heap → ListValValid args_b s_b.heap →
+  SetFreeVal op_a → SetFreeVal op_b →                  -- ← Path-A
+  SetFreeListVal args_a → SetFreeListVal args_b →      -- ← Path-A
   applyDirect fuel ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
   ∃ r_b s_b',
     applyDirect fuel ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
@@ -139,17 +145,27 @@ theorem applyDirect_frame :
     WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
     HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
     EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
-    ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap
+    ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap ∧
+    SetFreeVal r_a ∧ SetFreeVal r_b                     -- ← Path-A output
 ```
 
-Plus parallel statements for `eval`, `evalList`, `applyVia`. Proved
-mutually by induction on fuel. The `eval`/`evalList` branches don't
-require `ValValid` on inputs — they produce `ValValid`/`ListValValid`
+Plus parallel statements for `eval`, `evalList`, `applyVia` (with
+`SetFreeExpr exp` / `SetFreeListExpr exps` instead of value-level
+set-freeness for the source-side branches). Proved mutually by
+induction on fuel. The `eval`/`evalList` branches don't require
+`ValValid` on inputs — they produce `ValValid`/`ListValValid`
 outputs from heap and env validity carried in `WFCtx`. The
 `applyVia`/`applyDirect` branches require `ValValid op` and
 `ListValValid args` as inputs because the closure case allocates
 args (which requires `EnvValid` on the closure's cenv, which
 unfolds from `ValValid` on the closure value).
+
+The internal `frame` signature is intentionally not bundled the
+way the public-facing `multnExact_soundForCE_first_install` is:
+the per-side decomposition (`op_a`/`op_b`, `args_a`/`args_b`) is
+load-bearing for the proof body's case-analysis on the cross-side
+bisim relation, and bundling would force destructure-and-reconstruct
+at every IH callsite.
 
 Status: **fully closed**, including the previously-open `.quote`
 and `.set` cases in `eval`. The closure of `.set` involved a
@@ -292,15 +308,22 @@ Reflective constructs:
 ## Layout
 
 ```
-lean-black/
+lean-green/
 ├── lakefile.lean
 ├── lean-toolchain
 ├── LeanBlack.lean           — top-level imports
 ├── LeanBlack/
 │   ├── Black.lean           — Val, Expr, Env, Heap, RunState, eval, ...
-│   ├── Bisim.lean           — ValVis, EnvVis, StateExt, framing theorems
-│   ├── Policies.lean        — BlackPolicy, library, verifiedTable
-│   ├── Soundness.lean       — multnExact_soundForCE_first_install
+│   │                          + closedValB (the `.quote` runtime gate)
+│   ├── Bisim.lean           — ValVis, EnvVis, StateExt, HeapExt,
+│   │                          ValValid / HeapValid / EnvValid validity,
+│   │                          SetFreeExpr / SetFreeVal / HeapSetFree
+│   │                          Path-A predicates, applyPrim_bisim,
+│   │                          alloc_chain_bisim, framing theorem `frame`
+│   ├── Policies.lean        — BlackPolicy, library, verifiedTable,
+│   │                          InstallFacts / RuntimeWF / SetFreeWF
+│   │                          bundled hypotheses,
+│   │                          multnExact_soundForCE_first_install
 │   ├── Bedrock.lean         — `aws bedrock-runtime invoke-model` wrapper
 │   ├── Elab.lean            — proposal elaboration via `lake env lean --run`
 │   └── Runner.lean          — one-round cascade
@@ -323,9 +346,10 @@ The proof chain has three levels:
         (vacuous, no Val rel)    (uses ValVis)
                   ↑                    ↑
                   ↓                    ↓
-       applyDirect_num_returns_none    applyDirect_frame
-                                           ↑
-                                  fuel_mono + ValVis machinery
+       applyDirect_num_returns_none    applyDirect_frame  ◀── multn_closure_body_unfolds
+                                           ↑               (deterministic eval-trace
+                                  frame + ValVis machinery   through the multn body)
+                                  + Path-A SetFree
 ```
 
 The numerical case is vacuous: `applyDirect` returns `none` on
