@@ -39,18 +39,36 @@ Three layers:
 
 - **Operational** (`Policies.lean`). The headline theorem
   `multnExact_soundForCE_first_install`: `multnExactPolicy` is sound
-  for `ConservativeExt` under eleven hypotheses (`OrigBoundIn`,
-  `NumQBoundIn`, `HeapValid`, `EnvValid metaEnv`,
-  `EnvValid (cenvOf new)`, `ValValid op`, `ListValValid operands`,
-  `HeapSetFree s.heap`, `SetFreeVal op`, `SetFreeListVal operands`,
-  `fuel ≥ 2`). The first two are install-time facts; the next five
-  are runtime invariants the runner naturally maintains; the three
-  Path-A side-conditions (`HeapSetFree` / `SetFreeVal` / `SetFreeListVal`)
-  reflect the operationally honest framing-domain restriction
-  discussed under *Concessions* below; the fuel bound is trivially satisfied
-  at the call site (`Smoke.lean` runs at `fuel = 10000`). **Fully
-  proved.** The trace lemma `multn_closure_body_unfolds` and the
-  composition with `frame.applyDirect` are both closed.
+  for `ConservativeExt`. The eleven side-conditions on a clean-state
+  install are bundled into three load-bearing structures:
+
+  ```
+  theorem multnExact_soundForCE_first_install
+      (h_admit : multnExactPolicy .builtinBaseApply new = true)
+      (h_fuel  : fuel ≥ 2)
+      (h_old   : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
+                   = some (r, s'))
+      (install : InstallFacts new s.heap)
+      (wf      : RuntimeWF new metaEnv op operands s.heap)
+      (sf      : SetFreeWF op operands s.heap) :
+      ∃ fuel' s'' r',
+        callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
+        ValVis r r' s'.heap s''.heap
+  ```
+
+  - **`InstallFacts`** — install-time facts (`OrigBoundIn` +
+    `NumQBoundIn` for the multn closure's cenv).
+  - **`RuntimeWF`** — runtime validity invariants (`HeapValid`,
+    `EnvValid metaEnv`, `EnvValid (cenvOf new)`, `ValValid op`,
+    `ListValValid operands`); the runner naturally maintains them.
+  - **`SetFreeWF`** — Path-A side-conditions (`HeapSetFree`,
+    `SetFreeVal op`, `SetFreeListVal operands`); reflect the
+    framing-domain restriction discussed under *Concessions* below.
+
+  The fuel bound is trivially satisfied at the call site
+  (`Smoke.lean` runs at `fuel = 10000`). **Fully proved.** The
+  trace lemma `multn_closure_body_unfolds` and the composition with
+  `frame.applyDirect` are both closed.
 
 - **Infrastructure** (`Bisim.lean`). The framing theorem `frame` —
   parallel statements for `eval`, `evalList`, `applyVia`,

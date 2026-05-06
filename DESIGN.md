@@ -51,68 +51,75 @@ the architectural floor `P` (= `ConservativeExt`). For
 `multnExactPolicy`, this is the headline result:
 
 ```
-theorem multnExact_soundForCE_first_install :
-    multnExactPolicy .builtinBaseApply new = true →
-    fuel ≥ 2 →
-    OrigBoundIn s.heap .builtinBaseApply new →
-    NumQBoundIn s.heap (cenvOf new) →
-    HeapValid s.heap →
-    EnvValid metaEnv s.heap →
-    (∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap) →
-    ValValid op s.heap →
-    ListValValid operands s.heap →
-    HeapSetFree s.heap →                  -- ← Path-A side-condition
-    SetFreeVal op →                       -- ← Path-A side-condition
-    SetFreeListVal operands →             -- ← Path-A side-condition
-    callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
-        = some (r, s') →
+theorem multnExact_soundForCE_first_install
+    (h_admit : multnExactPolicy .builtinBaseApply new = true)
+    (h_fuel  : fuel ≥ 2)
+    (h_old   : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
+                 = some (r, s'))
+    (install : InstallFacts new s.heap)
+    (wf      : RuntimeWF new metaEnv op operands s.heap)
+    (sf      : SetFreeWF op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
-      ValVis r r' s.heap s''.heap
+      ValVis r r' s'.heap s''.heap
+```
+
+The eleven invariants are bundled into three structures, grouped
+by load-bearing role:
+
+```
+structure InstallFacts (new : Val) (heap : Heap) : Prop where
+  orig : OrigBoundIn heap .builtinBaseApply new
+  numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn heap cenv
+
+structure RuntimeWF (new metaEnv op operands heap : ...) : Prop where
+  hv_heap      : HeapValid heap
+  ev_meta      : EnvValid metaEnv heap
+  ev_cenv      : ∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' heap
+  vv_op        : ValValid op heap
+  lvv_operands : ListValValid operands heap
+
+structure SetFreeWF (op operands heap : ...) : Prop where
+  sf_heap      : HeapSetFree heap
+  sf_op        : SetFreeVal op
+  sf_operands  : SetFreeListVal operands
 ```
 
 Here `ValVis` is the value-equivalence relation defined below
 (values structurally equal up to closure-environment refinement).
-The install-protocol hypotheses encode what the runner guarantees
-when it admits a modification via
-`(em (let orig base-apply (set! base-apply <PROP>)))` from a clean
-state:
 
-- **`OrigBoundIn`** — closure cenv binds `"orig"` to a heap cell
-  holding `.builtinBaseApply` (the captured original)
-- **`NumQBoundIn`** — cenv binds `"num?"` to `.prim "num?"`, so the
-  body's cond evaluation can resolve
-- **`HeapValid`** — every heap cell holds a `ValValid` value
-- **`EnvValid metaEnv`** — meta-env's bindings point to valid heap
-  cells
-- **`EnvValid (cenvOf new)`** — the closure's captured env is valid
-  in the heap (needed for the closure-call alloc to produce a valid
-  extended env)
-- **`ValValid op`, `ListValValid operands`** — the operator and
-  operands the runner passes are valid in the heap (needed for
-  `frame.applyDirect` to apply at the inner recursive call)
-- **`HeapSetFree s.heap`, `SetFreeVal op`, `SetFreeListVal operands`** —
-  Path-A side-conditions: the heap and the operator/operands lie
-  in `frame`'s set-free domain. The runner trivially maintains
-  these — it only constructs values from `.lam` bodies and atomic
-  literals, never from `.set`-bearing source. See *Refinements /
-  `.set` and Path A* below for why this restriction is the
-  principled answer rather than a missing proof.
+- **`InstallFacts`** captures what the runner guarantees when it
+  admits a modification via
+  `(em (let orig base-apply (set! base-apply <PROP>)))` from a
+  clean state: `OrigBoundIn` (closure cenv binds `"orig"` to a
+  heap cell holding `.builtinBaseApply`) and `NumQBoundIn` (cenv
+  binds `"num?"` to `.prim "num?"`, so the body's cond evaluation
+  can resolve).
+- **`RuntimeWF`** captures the runtime well-formedness invariants
+  the runner inductively maintains: `HeapValid`, `EnvValid
+  metaEnv`, `EnvValid (cenvOf new)` for the captured cenv,
+  `ValValid op`, and `ListValValid operands`.
+- **`SetFreeWF`** captures the Path-A side-conditions: the heap
+  and the `(op, operands)` triple lie in `frame`'s set-free
+  domain. The runner trivially maintains these — it only
+  constructs values from `.lam` bodies and atomic literals, never
+  from `.set`-bearing source. See *Refinements / `.set` and Path A*
+  below for why this restriction is the principled answer rather
+  than a missing proof.
 - **`fuel ≥ 2`** — the closure-body trace evaluates an `evalList`
   over a 2-element argument list, which decrements fuel twice
   internally; `fuel ≥ 2` ensures all those internal calls have
   enough fuel to succeed. Trivially satisfied in practice
   (`Smoke.lean` runs at `fuel = 10000`).
 
-The first two are install-time facts. The validity hypotheses are
-runtime invariants the runner maintains across any sequence of
-admitted modifications: heap and env validity are inductive on
-the runtime, and the `op`/`operands` validity follows from the
-fact that base-level evaluations on a `HeapValid` heap produce
-`ValValid` values. The Path-A side-conditions are similarly
-inductive on the runner's value-construction protocol. The fuel
-bound is a precondition the runner must establish at the call
-site. Each is a 1-3 line predicate.
+The `InstallFacts` are install-time facts (set up once at the
+moment of admission). The `RuntimeWF` invariants are inductive on
+the runtime: heap and env validity propagate naturally, and the
+`op`/`operands` validity follows from the fact that base-level
+evaluations on a `HeapValid` heap produce `ValValid` values. The
+`SetFreeWF` side-conditions are similarly inductive on the
+runner's value-construction protocol. The fuel bound is a
+precondition the runner must establish at the call site.
 
 **Infrastructure.** The framing theorem that makes the operational
 proof possible:

@@ -212,6 +212,40 @@ def OrigBoundIn (heap : Heap) (old : Val) (new : Val) : Prop :=
 def NumQBoundIn (heap : Heap) (cenv : Env) : Prop :=
   ∃ idx, cenv.lookup "num?" = some idx ∧ heap[idx]? = some (.prim "num?")
 
+/-- Both install-time facts the runner must establish when it admits
+    a `multnExactPolicy`-shaped modification: the new closure's cenv
+    binds `"orig"` to the captured `.builtinBaseApply`, and binds
+    `"num?"` to `.prim "num?"`. -/
+structure InstallFacts (new : Val) (heap : Heap) : Prop where
+  orig : OrigBoundIn heap .builtinBaseApply new
+  numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn heap cenv
+
+/-- Runtime well-formedness invariants the runner inductively
+    maintains: heaps and metaEnv are validity-closed, the captured
+    cenv of `new` (whenever `new` is a closure) is valid in the heap,
+    and the `(op, operands)` triple the runner is about to dispatch
+    is valid. -/
+structure RuntimeWF
+    (new : Val) (metaEnv : Env) (op : Val) (operands : List Val)
+    (heap : Heap) : Prop where
+  hv_heap     : HeapValid heap
+  ev_meta     : EnvValid metaEnv heap
+  ev_cenv     : ∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' heap
+  vv_op       : ValValid op heap
+  lvv_operands : ListValValid operands heap
+
+/-- Path-A side-conditions: the heap, the operator, and the operands
+    all lie in `frame`'s set-free domain. The runner trivially
+    maintains these — it only constructs values from `.lam` bodies of
+    set-free Black source and atomic literals, never from `.set`-bearing
+    source. See *Concession 2* in the README and the *`.set` and Path A*
+    refinement in DESIGN.md. -/
+structure SetFreeWF
+    (op : Val) (operands : List Val) (heap : Heap) : Prop where
+  sf_heap     : HeapSetFree heap
+  sf_op       : SetFreeVal op
+  sf_operands : SetFreeListVal operands
+
 /-! ## multn closure-body trace lemma (sketch)
 
     The intent: with `fuel ≥ 2`, `callAsBaseApply` on the multn closure
@@ -385,26 +419,23 @@ theorem multnExact_CE_num_case_vacuous
     Stage-3 work item: depends on the recursive cases of the `frame`
     theorem being closed in `Bisim.lean`. -/
 theorem multnExact_CE_nonnum_case
-    (new : Val) (h_admit : multnExactPolicy .builtinBaseApply new = true)
-    (fuel : Nat) (h_fuel : fuel ≥ 2)
-    (ptable : PolicyTable) (op : Val) (h_op : OpNotNum op)
-    (operands : List Val) (metaEnv : Env) (s : RunState) (r : Val) (s' : RunState)
+    {new : Val} (h_admit : multnExactPolicy .builtinBaseApply new = true)
+    {fuel : Nat} (h_fuel : fuel ≥ 2)
+    {ptable : PolicyTable} {op : Val} (h_op : OpNotNum op)
+    {operands : List Val} {metaEnv : Env} {s : RunState}
+    {r : Val} {s' : RunState}
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
-    (h_orig : OrigBoundIn s.heap .builtinBaseApply new)
-    (h_numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn s.heap cenv)
-    (h_heap : HeapValid s.heap)
-    (h_meta_valid : EnvValid metaEnv s.heap)
-    (hv_cenv : ∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap)
-    (hv_op : ValValid op s.heap)
-    (hv_operands : ListValValid operands s.heap)
-    -- Path-A side-conditions (set-free domain of `frame`):
-    (hsf_heap : HeapSetFree s.heap)
-    (hsf_op : SetFreeVal op)
-    (hsf_operands : SetFreeListVal operands) :
+    (install : InstallFacts new s.heap)
+    (wf : RuntimeWF new metaEnv op operands s.heap)
+    (sf : SetFreeWF op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
+  -- Destructure the bundled hypotheses to keep the proof body unchanged.
+  obtain ⟨h_orig, h_numq⟩ := install
+  obtain ⟨h_heap, h_meta_valid, hv_cenv, hv_op, hv_operands⟩ := wf
+  obtain ⟨hsf_heap, hsf_op, hsf_operands⟩ := sf
   -- Structural extraction: new is the multn-shaped closure.
   have shape : MultnExactShape new :=
     multnExact_sound_for_shape .builtinBaseApply new h_admit
@@ -527,24 +558,16 @@ theorem multnExact_CE_nonnum_case
     install-protocol hypotheses (`NumQBoundIn`, `HeapValid`,
     `EnvValid metaEnv`). -/
 theorem multnExact_soundForCE_first_install
-    (new : Val) (h_admit : multnExactPolicy .builtinBaseApply new = true)
-    (fuel : Nat) (h_fuel : fuel ≥ 2)
-    (ptable : PolicyTable) (op : Val)
-    (operands : List Val) (metaEnv : Env) (s : RunState)
-    (r : Val) (s' : RunState)
+    {new : Val} (h_admit : multnExactPolicy .builtinBaseApply new = true)
+    {fuel : Nat} (h_fuel : fuel ≥ 2)
+    {ptable : PolicyTable} {op : Val}
+    {operands : List Val} {metaEnv : Env} {s : RunState}
+    {r : Val} {s' : RunState}
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
-    (h_orig : OrigBoundIn s.heap .builtinBaseApply new)
-    (h_numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn s.heap cenv)
-    (h_heap : HeapValid s.heap)
-    (h_meta_valid : EnvValid metaEnv s.heap)
-    (hv_cenv : ∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap)
-    (hv_op : ValValid op s.heap)
-    (hv_operands : ListValValid operands s.heap)
-    -- Path-A side-conditions (set-free domain of `frame`):
-    (hsf_heap : HeapSetFree s.heap)
-    (hsf_op : SetFreeVal op)
-    (hsf_operands : SetFreeListVal operands) :
+    (install : InstallFacts new s.heap)
+    (wf : RuntimeWF new metaEnv op operands s.heap)
+    (sf : SetFreeWF op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
@@ -555,9 +578,7 @@ theorem multnExact_soundForCE_first_install
   · have h_op : OpNotNum op := by
       intro n hop_num
       exact hn ⟨n, hop_num⟩
-    exact multnExact_CE_nonnum_case new h_admit fuel h_fuel ptable op h_op
-      operands metaEnv s r s' h_old h_orig h_numq h_heap h_meta_valid
-      hv_cenv hv_op hv_operands hsf_heap hsf_op hsf_operands
+    exact multnExact_CE_nonnum_case h_admit h_fuel h_op h_old install wf sf
 
 /-! ## The verified policy table -/
 
