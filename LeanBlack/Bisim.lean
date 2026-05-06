@@ -134,6 +134,35 @@ theorem StateExt.heap_le {s_a s_b : RunState} (h : StateExt s_a s_b) :
   rw [hext, List.length_append]
   exact Nat.le_add_right _ _
 
+/-- **Heap-only extension** between states, ignoring the policy. The
+    same-side state evolution under `eval`: heap grows monotonically,
+    but the policy may change (via `installPolicy`). Distinct from
+    `StateExt` (which is *cross-side* and requires same policy on
+    both sides). -/
+def HeapExt (s_a s_b : RunState) : Prop :=
+  ∃ extras, s_b.heap = s_a.heap ++ extras
+
+theorem HeapExt.refl (s : RunState) : HeapExt s s :=
+  ⟨[], (List.append_nil _).symm⟩
+
+theorem HeapExt.trans {s_a s_b s_c : RunState}
+    (h_ab : HeapExt s_a s_b) (h_bc : HeapExt s_b s_c) :
+    HeapExt s_a s_c := by
+  obtain ⟨extras_ab, h_heap_ab⟩ := h_ab
+  obtain ⟨extras_bc, h_heap_bc⟩ := h_bc
+  exact ⟨extras_ab ++ extras_bc, by rw [h_heap_bc, h_heap_ab, List.append_assoc]⟩
+
+theorem HeapExt.heap_le {s_a s_b : RunState} (h : HeapExt s_a s_b) :
+    s_a.heap.length ≤ s_b.heap.length := by
+  obtain ⟨extras, hext⟩ := h
+  rw [hext, List.length_append]
+  exact Nat.le_add_right _ _
+
+/-- `StateExt` implies `HeapExt` (forgetting the policy constraint). -/
+theorem StateExt.toHeapExt {s_a s_b : RunState} (h : StateExt s_a s_b) :
+    HeapExt s_a s_b :=
+  ⟨h.2.choose, h.2.choose_spec⟩
+
 /-! ## Validity and self-bisimulation -/
 
 /-- An env is **valid** in heap `h` if all its bindings point to
@@ -457,6 +486,28 @@ theorem EnvVis_aux_extends (n : Nat) :
 
 end
 
+/-! ## Universal-depth heap-extension lemmas -/
+
+/-- `ValVis` (universal over depths) preserved under heap extension. -/
+theorem ValVis_extends (v_a v_b : Val) (h_a h_b ext_a ext_b : Heap)
+    (hh_a : HeapValid h_a) (hh_b : HeapValid h_b)
+    (hv_a : ValValid v_a h_a) (hv_b : ValValid v_b h_b)
+    (h_vis : ValVis v_a v_b h_a h_b) :
+    ValVis v_a v_b (h_a ++ ext_a) (h_b ++ ext_b) := by
+  intro n
+  exact ValVis_aux_extends n v_a v_b h_a h_b ext_a ext_b
+    hh_a hh_b hv_a hv_b (h_vis n)
+
+/-- `EnvVis` (universal over depths) preserved under heap extension. -/
+theorem EnvVis_extends (env_a env_b : Env) (h_a h_b ext_a ext_b : Heap)
+    (hh_a : HeapValid h_a) (hh_b : HeapValid h_b)
+    (hv_a : EnvValid env_a h_a) (hv_b : EnvValid env_b h_b)
+    (h_vis : EnvVis env_a env_b h_a h_b) :
+    EnvVis env_a env_b (h_a ++ ext_a) (h_b ++ ext_b) := by
+  intro n
+  exact EnvVis_aux_extends n env_a env_b h_a h_b ext_a ext_b
+    hh_a hh_b hv_a hv_b (h_vis n)
+
 /-! ## Framing theorem (joint mutual statement)
 
     Each function in the four-way mutual block preserves bisimulation
@@ -501,7 +552,7 @@ private def FrameStmt (n : Nat) : Prop :=
       eval n ptable exp env_b metaEnv s_b = some (r_b, s_b') ∧
       ValVis r_a r_b s_a'.heap s_b'.heap ∧
       WFCtx env_a env_b metaEnv s_a' s_b' ∧
-      StateExt s_a s_a' ∧ StateExt s_b s_b' ∧
+      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis env_a env_b s_a'.heap s_b'.heap ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap) ∧
   (∀ (ptable : PolicyTable) (exps : List Expr) (env_a env_b metaEnv : Env)
@@ -514,7 +565,7 @@ private def FrameStmt (n : Nat) : Prop :=
       evalList n ptable exps env_b metaEnv s_b = some (rs_b, s_b') ∧
       rs_a.length = rs_b.length ∧
       WFCtx env_a env_b metaEnv s_a' s_b' ∧
-      StateExt s_a s_a' ∧ StateExt s_b s_b' ∧
+      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis env_a env_b s_a'.heap s_b'.heap ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap) ∧
   (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
@@ -527,7 +578,7 @@ private def FrameStmt (n : Nat) : Prop :=
       applyVia n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
       ValVis r_a r_b s_a'.heap s_b'.heap ∧
       WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
-      StateExt s_a s_a' ∧ StateExt s_b s_b' ∧
+      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap) ∧
   (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
      (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
@@ -539,7 +590,7 @@ private def FrameStmt (n : Nat) : Prop :=
       applyDirect n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
       ValVis r_a r_b s_a'.heap s_b'.heap ∧
       WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
-      StateExt s_a s_a' ∧ StateExt s_b s_b' ∧
+      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap)
 
 /-- The main framing theorem. Joint statement, mutually proved by
@@ -572,7 +623,7 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.num i, s_b, ?_, ?_, h_ctx,
-                    StateExt.refl _, StateExt.refl _, h_env, h_meta⟩
+                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta⟩
             · simp [eval]
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
@@ -581,7 +632,7 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.bool b, s_b, ?_, ?_, h_ctx,
-                    StateExt.refl _, StateExt.refl _, h_env, h_meta⟩
+                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta⟩
             · simp [eval]
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
@@ -621,7 +672,7 @@ theorem frame : ∀ n, FrameStmt n := by
                             rw [hp_b] at h_x1; simp only at h_x1
                         | some v_b =>
                             refine ⟨v_b, s_b, ?_, ?_, h_ctx,
-                                    StateExt.refl _, StateExt.refl _, h_env, h_meta⟩
+                                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta⟩
                             · simp [eval, hl_b, hp_b]
                             · intro depth
                               have h_x_d := h_env depth x
@@ -634,7 +685,7 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.closure ps body env_b, s_b, ?_, ?_, h_ctx,
-                    StateExt.refl _, StateExt.refl _, h_env, h_meta⟩
+                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta⟩
             · simp [eval]
             · intro depth
               cases depth with
@@ -651,24 +702,56 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨h_r, h_s⟩ := h_eval
                 subst h_r; subst h_s
                 refine ⟨.bool false, s_b, ?_, ?_, h_ctx,
-                        StateExt.refl _, StateExt.refl _, h_env, h_meta⟩
+                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta⟩
                 · simp [eval, hp]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => rfl
-            | some _newPolicy =>
-                -- installPolicy changes both states' policy. The same-side
-                -- StateExt s_a s_a' as currently defined requires equal
-                -- policies, which fails. Need a relaxed `HeapExt` relation
-                -- (heap-prefix, no policy constraint) for same-side evolution.
-                -- Stage-3 work item.
-                sorry
-        | em _ =>
-            -- IH on body uses metaEnv as env. Conclusion needs WFCtx
-            -- env_a env_b metaEnv s_a' s_b' but IH gives WFCtx
-            -- metaEnv metaEnv metaEnv s_a' s_b'. Bridge via the heap-
-            -- extension lemmas + h_ctx — straightforward but tedious.
-            -- Stage 3.
-            sorry
+            | some newPolicy =>
+                rw [hp] at h_eval
+                simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                -- installPolicy: both states get the same new policy.
+                -- Heap unchanged on both sides; HeapExt extras = [].
+                -- Cross-side StateExt s_a' s_b' holds: same new policy on
+                -- both, heap relation preserved.
+                obtain ⟨_, extras, hex⟩ := h_ctx.state_ext
+                refine ⟨.bool true, { s_b with policy := newPolicy }, ?_, ?_,
+                        ⟨⟨rfl, extras, hex⟩,
+                         h_ctx.hv_a, h_ctx.hv_b,
+                         h_ctx.ev_a, h_ctx.ev_b,
+                         h_ctx.em_a, h_ctx.em_b⟩,
+                        HeapExt.refl _, HeapExt.refl _,
+                        h_env, h_meta⟩
+                · simp [eval, hp]
+                · intro depth
+                  cases depth with | zero => trivial | succ _ => rfl
+        | em body =>
+            simp only [eval] at h_eval
+            -- IH on body uses metaEnv as env on both sides.
+            have h_ctx_meta : WFCtx metaEnv metaEnv metaEnv s_a s_b :=
+              ⟨h_ctx.state_ext, h_ctx.hv_a, h_ctx.hv_b,
+               h_ctx.em_a, h_ctx.em_b, h_ctx.em_a, h_ctx.em_b⟩
+            obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he_a, h_he_b, _h_env_meta, h_meta'⟩ :=
+              ih_eval ptable body metaEnv metaEnv metaEnv s_a s_b r_a s_a'
+                h_ctx_meta h_meta h_meta h_eval
+            -- Derive EnvVis env_a env_b s_a'.heap s_b'.heap from
+            -- h_env + heap extension via `EnvVis_extends`.
+            obtain ⟨extras_a, h_a_eq⟩ := h_he_a
+            obtain ⟨extras_b, h_b_eq⟩ := h_he_b
+            have h_env' : EnvVis env_a env_b s_a'.heap s_b'.heap := by
+              rw [h_a_eq, h_b_eq]
+              exact EnvVis_extends env_a env_b s_a.heap s_b.heap extras_a extras_b
+                h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
+            -- WFCtx env_a env_b metaEnv s_a' s_b' from IH + heap_extends
+            have h_ctx_out : WFCtx env_a env_b metaEnv s_a' s_b' :=
+              ⟨h_ctx'.state_ext, h_ctx'.hv_a, h_ctx'.hv_b,
+               EnvValid.heap_extends h_ctx.ev_a ⟨extras_a, h_a_eq⟩,
+               EnvValid.heap_extends h_ctx.ev_b ⟨extras_b, h_b_eq⟩,
+               h_ctx'.em_a, h_ctx'.em_b⟩
+            refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
+                    ⟨extras_a, h_a_eq⟩, ⟨extras_b, h_b_eq⟩, h_env', h_meta'⟩
+            simp [eval, h_eval_b]
         | seq exps =>
             cases exps with
             | nil =>
@@ -676,7 +759,7 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨h_r, h_s⟩ := h_eval
                 subst h_r; subst h_s
                 refine ⟨.nilV, s_b, ?_, ?_, h_ctx,
-                        StateExt.refl _, StateExt.refl _, h_env, h_meta⟩
+                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta⟩
                 · simp [eval]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => trivial
