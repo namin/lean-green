@@ -39,14 +39,16 @@ Three layers:
 
 - **Operational** (`Policies.lean`). The headline theorem
   `multnExact_soundForCE_first_install`: `multnExactPolicy` is sound
-  for `ConservativeExt` under seven install-protocol hypotheses
-  (`OrigBoundIn`, `NumQBoundIn`, `HeapValid`, `EnvValid metaEnv`,
-  `EnvValid (cenvOf new)`, `ValValid op`, `ListValValid operands`).
-  The first two are install-time facts; the remaining five are
-  runtime invariants the runner naturally maintains. Proved
-  conditional on the inner trace through the closure body in
-  `multnExact_CE_nonnum_case` (the structural setup is done; the
-  remaining ~200 LOC mechanical eval-trace is open).
+  for `ConservativeExt` under eight hypotheses (`OrigBoundIn`,
+  `NumQBoundIn`, `HeapValid`, `EnvValid metaEnv`,
+  `EnvValid (cenvOf new)`, `ValValid op`, `ListValValid operands`,
+  `fuel ≥ 2`). The first two are install-time facts; the next five
+  are runtime invariants the runner naturally maintains; the fuel
+  bound is trivially satisfied at the call site (`Smoke.lean` runs
+  at `fuel = 10000`). Proved conditional on the inner trace through
+  the closure body in `multnExact_CE_nonnum_case` (the structural
+  setup is done; the remaining ~200 LOC mechanical eval-trace is
+  open).
 
 - **Infrastructure** (`Bisim.lean`). The framing theorem `frame` —
   parallel statements for `eval`, `evalList`, `applyVia`,

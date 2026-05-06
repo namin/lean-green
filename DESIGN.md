@@ -53,6 +53,7 @@ the architectural floor `P` (= `ConservativeExt`). For
 ```
 theorem multnExact_soundForCE_first_install :
     multnExactPolicy .builtinBaseApply new = true →
+    fuel ≥ 2 →
     OrigBoundIn s.heap .builtinBaseApply new →
     NumQBoundIn s.heap (cenvOf new) →
     HeapValid s.heap →
@@ -87,13 +88,19 @@ state:
 - **`ValValid op`, `ListValValid operands`** — the operator and
   operands the runner passes are valid in the heap (needed for
   `frame.applyDirect` to apply at the inner recursive call)
+- **`fuel ≥ 2`** — the closure-body trace evaluates an `evalList`
+  over a 2-element argument list, which decrements fuel twice
+  internally; `fuel ≥ 2` ensures all those internal calls have
+  enough fuel to succeed. Trivially satisfied in practice
+  (`Smoke.lean` runs at `fuel = 10000`).
 
 The first two are install-time facts. The remaining ones are
 runtime invariants the runner maintains across any sequence of
 admitted modifications: heap and env validity are inductive on
 the runtime, and the `op`/`operands` validity follows from the
 fact that base-level evaluations on a `HeapValid` heap produce
-`ValValid` values. Each is a 1-3 line predicate.
+`ValValid` values. The fuel bound is a precondition the runner
+must establish at the call site. Each is a 1-3 line predicate.
 
 **Infrastructure.** The framing theorem that makes the operational
 proof possible:
