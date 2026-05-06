@@ -98,16 +98,24 @@ def test_governed_admits_multn : Option Val :=
 
 /-! ## Reporting -/
 
+/-- Mutable failure counter. CI relies on `main` exiting non-zero
+    when any test fails, so the suite is genuinely actionable. -/
+initialize failureCount : IO.Ref Nat ← IO.mkRef 0
+
 def reportLine (label : String) (actual expected : Option Val) : IO Unit := do
   let actualStr   := toString (repr actual)
   let expectedStr := toString (repr expected)
-  let mark := if actualStr == expectedStr then "OK  " else "FAIL"
+  let ok := actualStr == expectedStr
+  let mark := if ok then "OK  " else "FAIL"
+  if ¬ ok then failureCount.modify (· + 1)
   IO.println s!"{mark} {label}: {actualStr}"
 
 def reportPair (label : String) (actual expected : Option (Val × Val)) : IO Unit := do
   let actualStr   := toString (repr actual)
   let expectedStr := toString (repr expected)
-  let mark := if actualStr == expectedStr then "OK  " else "FAIL"
+  let ok := actualStr == expectedStr
+  let mark := if ok then "OK  " else "FAIL"
+  if ¬ ok then failureCount.modify (· + 1)
   IO.println s!"{mark} {label}: {actualStr}"
 
 def main : IO Unit := do
@@ -122,3 +130,8 @@ def main : IO Unit := do
   reportPair "badmod refused, plus ok"  test_governed_refuses_badmod
                                         (some (.bool false, .num 3))
   reportLine "(2 3 4) post-multn"       test_governed_admits_multn (some (.num 24))
+  let n ← failureCount.get
+  if n > 0 then
+    IO.println s!"\n{n} failure(s)."
+    IO.Process.exit 1
+  IO.println "\nAll tests passed."

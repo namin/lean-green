@@ -46,9 +46,15 @@ closures of the strict multn pattern with delegating else-branch.
 These are inversions of the policy's pattern-matching definition,
 proved by case analysis.
 
-**Operational.** Every policy in the verified table is sound for
-the architectural floor `P` (= `ConservativeExt`). For
-`multnExactPolicy`, this is the headline result:
+**Operational.** The verified table currently has *one* policy
+proved sound for the architectural floor `P` (=
+`ConservativeExt`): `multnExactPolicy`. The other entries
+(`rejectAll`, `numGuardPolicy`) are in the table but only have
+weaker guarantees: `rejectAll` is trivially CE-sound (admits
+nothing); `numGuardPolicy` is structurally sound for its loose
+shape but is **not** CE-sound (its else-branch is unconstrained,
+so an admitted closure can break CE on non-numeric operators).
+The headline operational result is for `multnExactPolicy`:
 
 ```
 theorem multnExact_soundForCE_first_install

@@ -251,21 +251,20 @@ structure SetFreeWF
   sf_op       : SetFreeVal op
   sf_operands : SetFreeListVal operands
 
-/-! ## multn closure-body trace lemma (sketch)
+/-! ## multn closure-body trace lemma
 
-    The intent: with `fuel ≥ 2`, `callAsBaseApply` on the multn closure
-    unfolds in `fuel + 4` steps to `applyDirect fuel op operands` at
-    the alloc'd state.
+    With `fuel ≥ 2`, `callAsBaseApply` on the multn closure unfolds
+    in `fuel + 4` steps to `applyDirect fuel op operands` at the
+    alloc'd state.
 
-    The proof requires stepping through `applyDirect`'s closure case
-    (length check + foldl alloc + eval body), then `eval` of the .ifte
-    cond and else branches, etc. Each step is a definitional reduction,
-    but Lean's match-equational-lemma generation and reduction-not-
-    definitional-equality issues (notably `(s.heap ++ [v]).length` vs
-    `s.heap.length + 1`) prevent a clean `show ... = ...` chain.
-
-    Stage-3 work item — the structural setup is in
-    `multnExact_CE_nonnum_case` below. -/
+    The proof steps through `applyDirect`'s closure case (length
+    check + foldl alloc + eval body), then `eval` of the `.ifte`
+    cond and else branches. Each step is a definitional reduction;
+    `simp only [...]` keyed on the four heap+env lookup facts
+    (`hl_numq` / `hl_op` / `hl_args` / `hl_orig` and their `hp_*`
+    heap counterparts) plus the standard reduction lemmas
+    (`applyPrim_numq_nonnum`, `valToList_listToVal`) discharges
+    each block. -/
 theorem multn_closure_body_unfolds
     (fuel : Nat) (h_fuel : fuel ≥ 2)
     (ptable : PolicyTable) (op : Val) (h_op : OpNotNum op)
@@ -419,10 +418,9 @@ theorem multnExact_CE_num_case_vacuous
     - `EnvValid metaEnv s.heap` — for the metaEnv preservation step.
 
     The runner's install protocol guarantees all four when admitting
-    a multn modification from the standard initial state.
-
-    Stage-3 work item: depends on the recursive cases of the `frame`
-    theorem being closed in `Bisim.lean`. -/
+    a multn modification from the standard initial state. Path-A
+    side-conditions (`HeapSetFree` / `SetFreeVal op` /
+    `SetFreeListVal operands`) are bundled into `SetFreeWF`. -/
 theorem multnExact_CE_nonnum_case
     {new : Val} (h_admit : multnExactPolicy .builtinBaseApply new = true)
     {fuel : Nat} (h_fuel : fuel ≥ 2)

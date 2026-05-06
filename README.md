@@ -109,6 +109,24 @@ and `Policies.lean` are closed.
 ### Concessions made to close them
 
 Two of the three closures changed the development's surface area.
+Plus a third concession that **predates** the closures and is
+genuinely load-bearing for any honest reading of the artifact:
+
+0. **The runner does not yet enforce the verified theorem's
+   preconditions.** `multnExact_soundForCE_first_install` requires
+   install-protocol facts (`InstallFacts`: `OrigBoundIn`,
+   `NumQBoundIn`) that the runtime policy gate cannot inspect —
+   `BlackPolicy : Val → Val → Bool` only sees `(old, new)`, not
+   the target name, heap, or captured-env contents. The active
+   runner policy is also `numGuardPolicy` (loose syntactic shape),
+   not `multnExactPolicy`. So a malicious proposal can match the
+   admission shape while violating `OrigBoundIn` (e.g., shadow
+   `orig` with `let orig = .num 0 in λ ...`), and the runner
+   admits it. The headline theorem is real, but it constrains
+   *programs that actually satisfy its preconditions*, not
+   programs the runner happens to admit. The next-milestone
+   roadmap to close this gap is in `FUTURE.md` /
+   *Hardening the proposal-to-admission seam*.
 
 1. **`eval`'s `.quote v` is now restricted to "closed" values.**
    `eval` checks `closedValB v` at the `.quote v` case and returns

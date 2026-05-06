@@ -500,11 +500,7 @@ theorem closedValB_ValVis_aux : ∀ (n : Nat) (v : Val) (h_a h_b : Heap),
 
     Both proofs go by induction on depth `n`. The closure case at
     depth `n+1` uses `EnvVis_aux_extends` at depth `n`, which uses
-    `ValVis_aux_extends` at depth `n` (the IH).
-
-    Stage-3 work item: full proof. For now, the lemmas are stated
-    so the framing theorem above can be structured against them,
-    making the dependency explicit. -/
+    `ValVis_aux_extends` at depth `n` (the IH). -/
 
 mutual
 
@@ -2508,14 +2504,13 @@ private def FrameStmt (n : Nat) : Prop :=
       SetFreeVal r_a ∧ SetFreeVal r_b)
 
 /-- The main framing theorem. Joint statement, mutually proved by
-    induction on fuel.
-
-    Status: zero case + eval's leaf cases (literals, var, lam,
-    installPolicy) proved here. Recursive cases (.ifte, .app,
-    .primApp, .set, .em, .letE, .seq) and the other three function
-    cases (evalList, applyVia, applyDirect) follow the same template
-    that closed `fuel_mono_succ` in lean-grey, threading `ValVis` /
-    `EnvVis` invariants through inner calls. ~400 LOC remaining. -/
+    induction on fuel. **Fully closed.** All leaf cases, all
+    recursive cases of `eval` (.ifte, .app, .primApp, .em, .letE,
+    .seq, .quote via `closedValB`, .set by `SetFreeExpr`-
+    contradiction), and the closure / prim / builtinBaseApply
+    cases of `applyDirect` go through the same `ValVis` / `EnvVis`
+    threading template, with `SetFreeExpr` / `SetFreeVal` /
+    `HeapSetFree` propagated alongside (Path A). -/
 theorem frame : ∀ n, FrameStmt n := by
   intro n
   induction n with

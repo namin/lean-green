@@ -13,6 +13,167 @@ different foundations*.
 
 ---
 
+## Hardening the proposal-to-admission seam (next-milestone)
+
+The single most important next step is closing the gap between
+the verified theorem and the executable admission path. As the
+README's *Concession 0* notes,
+`multnExact_soundForCE_first_install` requires install-protocol
+facts (`InstallFacts`: `OrigBoundIn`, `NumQBoundIn`) that the
+runtime gate cannot inspect, and the runner currently admits
+under `numGuardPolicy` (loose, not CE-sound) rather than
+`multnExactPolicy`. Six concrete items, in priority order:
+
+### 1. Freeze `s.policy` before evaluating `.set`'s RHS
+
+`Black.lean`'s `.set` clause currently reads `s'.policy` —
+*after* the RHS has run. A proposal can therefore call
+`installPolicy` mid-RHS to downgrade the gate before the final
+write is checked. Fix:
+
+```lean
+| .set x e =>
+    let gate := s.policy   -- ← freeze
+    match eval n ptable e env metaEnv s with
+    | some (v, s') =>
+        ...
+        if gate oldVal v then ...
+```
+
+This closes the policy-downgrade attack. It does not address
+other RHS effects (heap mutation, further `.set`s) — those
+require the *restricted-proposal-syntax* item below.
+
+### 2. Restrict admissible proposals to direct `.lam` syntax
+
+The trusted installer should accept only
+
+```
+.lam ["op", "args"] body
+```
+
+— not arbitrary `Expr` that happens to evaluate to a closure.
+This rules out
+
+```
+.letE "orig" (.num 0) <| .lam ... body   -- shadows captured `orig`
+```
+
+and any `.set`-ful prelude in the RHS. Concretely, replace the
+LLM's "any Black `Expr`" interface with a "Lean-checked `body`
+expression" interface; the installer wraps it in `.lam` against
+the trusted Black runtime's `cenv` (which actually holds
+`base-apply` = the previous gate).
+
+### 3. Extend `BlackPolicy` to take a `MutationCtx`
+
+The `Val → Val → Bool` signature throws away the target name,
+the heap, the metaEnv, and the index — all of which the
+`InstallFacts` predicates require. The fix mirrors the review:
+
+```lean
+structure MutationCtx where
+  target  : String
+  heap    : Heap
+  env     : Env
+  metaEnv : Env
+  index   : Nat
+
+abbrev BlackPolicy := MutationCtx → Val → Val → Bool
+```
+
+`multnExactPolicy` then can check `target = "base-apply"` *and*
+that `OrigBoundIn` and `NumQBoundIn` hold structurally on the
+proposed closure's cenv against the live heap. The theorem's
+`InstallFacts` precondition becomes a *runtime-checkable*
+property that the policy gate actually establishes.
+
+### 4. Switch the runner to `multnExactPolicy` + a trusted installer
+
+With (1)–(3) in place, `Elab.lean` and `Runner.lean` switch
+their hardcoded `installPolicy idx_numGuard` to
+`installPolicy idx_multnExact`. The trusted installer is the
+piece that constructs the closure in the runtime's
+`base-apply`-binding `cenv` (so `OrigBoundIn` is true by
+construction) and calls the policy gate, which checks
+`NumQBoundIn` against the heap.
+
+### 5. Strengthen `CE` with post-state conditions
+
+The current `CE` says "old succeeds → new succeeds with a
+`ValVis`-related result." It does not say the result *states*
+agree on policy, on heap-validity, on `HeapSetFree`, or on the
+`base-apply` cell's contents. A reflective replacement could
+preserve the immediate result while corrupting future dispatch.
+Strengthen `CE` to:
+
+```lean
+def CE (old new : Val) : Prop :=
+  ∀ ..., callAsBaseApply ... old ... = some (r, s') →
+    ∃ fuel' s'' r',
+      callAsBaseApply ... new ... = some (r', s'') ∧
+      ValVis r r' s'.heap s''.heap ∧
+      s'.policy = s''.policy ∧                    -- policy preserved
+      HeapValid s''.heap ∧ HeapSetFree s''.heap ∧ -- heap invariants preserved
+      s''.heap.length ≥ s'.heap.length            -- monotone
+```
+
+The existing `frame.applyDirect` already returns most of this in
+its postcondition — wiring it through to `CE` is mostly
+plumbing, not new theorem work. Either rename the current
+property to `CE_oneCallResult` and reserve `CE` for the
+strengthened version, or strengthen in place and update the
+headline theorem accordingly.
+
+### 6. Adversarial smoke tests + non-zero CI exit
+
+`Smoke.lean` now exits non-zero on failure (a Tier-1 fix already
+landed). The next step is adding tests that *should fail* under
+the current runner, framing each as a regression target the
+admission-protocol fixes above must close:
+
+- `numGuard`-shaped malicious wrapper (passes `numGuardPolicy` +
+  the witness, breaks `(+ 1 2)`).
+- Shadowed-`orig` wrapper (passes `multnExactPolicy`, violates
+  `OrigBoundIn` — should be rejected once item 2 lands).
+- RHS-side `installPolicy` downgrade (should be rejected once
+  item 1 lands).
+- Mutation of `"+"` from inside proposal evaluation (should be
+  rejected once item 3 lands; the policy can check the target
+  name).
+- Proposal with `.em` nesting (the development is single-stage
+  meta).
+- Proposal with `.set` in the RHS prelude before the canonical
+  `.lam`.
+
+Each test specifies what the runner currently does (admits
+incorrectly) and what it must do post-fix (reject). The CI
+target moves from "does the build pass" to "does the runner
+reject every adversarial proposal we've enumerated."
+
+### 7. Sandbox the proposal elaboration path
+
+`Elab.lean` writes LLM output into a Lean source file and runs
+`lake env lean --run`, which is effectively executing untrusted
+Lean. The prompt's "no commentary" instruction is not a
+security boundary. Three options, in increasing order of
+isolation:
+
+- **Black `Expr` parser**: have the LLM emit a string in a small
+  Black-source notation, parsed by a Lean function in `Black.lean`.
+  Eliminates Lean elaboration-time side effects entirely.
+- **JSON AST**: the LLM emits a JSON form of `Expr`; deserialize
+  to `Expr` directly.
+- **Sandboxed elaboration**: keep the current shape but run
+  `lake env lean --run` in a process with no credentials, no
+  network, read-only repo, and a private temp directory.
+
+The first two are the right long-term answer; the third is a
+mitigation that lets the current cascade run more safely while
+the parser/AST route is built.
+
+---
+
 ## Extending the verified story
 
 ### Multi-install soundness

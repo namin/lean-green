@@ -14,10 +14,19 @@
     4. On elab error, retry up to `maxRetries` times with the
        diagnostic fed back into the prompt.
 
-  Single-stage cascade for now — no proof stage. Once the
-  `multnExactPolicy.SoundForCE` proof is in place, we'd add a proof
-  stage where the LLM supplies a `MultnExactShape` (or `CE`) proof on
-  rejection, mirroring lean-grey's two-stage flow.
+  ## Honest scope
+
+  This cascade demonstrates the LLM-proposer architecture; it is
+  *not* an enforcement of `multnExact_soundForCE_first_install`.
+  The active policy here is `numGuardPolicy` (loose syntactic
+  shape, **not** CE-sound on its own — see DESIGN.md "What this
+  isn't"); proposals matching the loose shape can pass admission
+  while breaking semantic conservativity. The verified CE story
+  is `multnExactPolicy` + the install-protocol theorem; the
+  runner does not currently enforce that protocol's preconditions
+  (target name, captured-env facts, RHS-effect freedom). See
+  FUTURE.md / *Hardening the proposal-to-admission seam* for the
+  next-milestone roadmap.
 -/
 
 import LeanBlack.Bedrock
