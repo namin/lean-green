@@ -55,6 +55,8 @@ theorem multnExact_soundForCE_first_install :
     multnExactPolicy .builtinBaseApply new = true →
     OrigBoundIn s.heap .builtinBaseApply new →
     NumQBoundIn s.heap (cenvOf new) →
+    HeapValid s.heap →
+    EnvValid metaEnv s.heap →
     callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s') →
     ∃ fuel' s'' r',
@@ -64,34 +66,46 @@ theorem multnExact_soundForCE_first_install :
 
 Here `ValVis` is the value-equivalence relation defined below
 (values structurally equal up to closure-environment refinement).
-The `OrigBoundIn` and `NumQBoundIn` hypotheses encode the install
-protocol — what the runner guarantees when it admits a modification
-via `(em (let orig base-apply (set! base-apply <PROP>)))` from a
-state where `base-apply` is `builtinBaseApply` and `cenv` extends
-the standard initial bindings.
+The four install-protocol hypotheses encode what the runner
+guarantees when it admits a modification via
+`(em (let orig base-apply (set! base-apply <PROP>)))` from a clean
+state:
+
+- **`OrigBoundIn`** — closure cenv binds `"orig"` to a heap cell
+  holding `.builtinBaseApply` (the captured original)
+- **`NumQBoundIn`** — cenv binds `"num?"` to `.prim "num?"`, so the
+  body's cond evaluation can resolve
+- **`HeapValid`** — every heap cell holds a `ValValid` value
+- **`EnvValid metaEnv`** — meta-env's bindings point to valid heap
+  cells
+
+The first two are install-time facts; the latter two are runtime
+invariants the runner maintains across any sequence of admitted
+modifications. Each is a 1-3 line predicate.
 
 **Infrastructure.** The framing theorem that makes the operational
 proof possible:
 
 ```
 theorem applyDirect_frame :
-  StateExt s_a s_b →
-  EnvVis env_a env_b s_a.heap s_b.heap →
+  WFCtx metaEnv metaEnv metaEnv s_a s_b →
   ValVis op_a op_b s_a.heap s_b.heap →
-  args_a.length = args_b.length →
-  (∀ i (h_lt : i < args_a.length),
-    ValVis (args_a.get ⟨i, h_lt⟩) (args_b.get ⟨i, by ...⟩)
-      s_a.heap s_b.heap) →
+  ListValVis args_a args_b s_a.heap s_b.heap →
   EnvVis metaEnv metaEnv s_a.heap s_b.heap →
   applyDirect fuel ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
   ∃ r_b s_b',
     applyDirect fuel ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
     ValVis r_a r_b s_a'.heap s_b'.heap ∧
-    StateExt s_a' s_b'
+    WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
+    HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
+    EnvVis metaEnv metaEnv s_a'.heap s_b'.heap
 ```
 
 Plus parallel statements for `eval`, `evalList`, `applyVia`. Proved
 mutually by induction on fuel.
+
+`WFCtx`, `HeapExt`, and `ListValVis` are bundling abstractions that
+emerged during the build — see the *Refinements* section below.
 
 ## Why ValVis
 
@@ -144,16 +158,26 @@ end
 
 The mutual recursion is not structural — `ValVis` on closures
 recurses into `EnvVis`, which iterates over names looking up `Val`s
-and recurses back. The well-founded measure is the size of the
-`Val` (treating closure size as the syntactic size of the body
-plus the env's binding count). Standard CakeML technique.
+and recurses back. **In practice we use depth-indexed approximations
+`ValVis_aux n` and `EnvVis_aux n` (see Refinements below), with
+`ValVis = ∀ n, ValVis_aux n`.** This gives `ValVis_aux` structural
+recursion in `Nat` and avoids the well-founded-measure dance — it's
+also how CakeML's analogous `_n`-indexed relations are organized.
 
-State extension is straightforward:
+State relations come in two flavors:
 
 ```lean
+-- Cross-side: between s_a and s_b. Same policy + heap relation.
 def StateExt (s_a s_b : RunState) : Prop :=
   s_a.policy = s_b.policy ∧ ∃ extras, s_b.heap = s_a.heap ++ extras
+
+-- Same-side: between s and the eval-result state. Heap-prefix only;
+-- the policy may change (via installPolicy), so no policy constraint.
+def HeapExt (s_a s_b : RunState) : Prop :=
+  ∃ extras, s_b.heap = s_a.heap ++ extras
 ```
+
+Both are needed; see Refinements.
 
 ## Substrate (the interpreter)
 
@@ -296,34 +320,36 @@ evaluation:
 
 ## Estimated scope
 
-Rough budget for the build, with Kumar 2016 as reference:
+Rough budget for the build, with Kumar 2016 as reference. **These
+are revised estimates** — initial ones in earlier drafts were ~50%
+too low, mostly because the bisimulation infrastructure required
+several supporting abstractions (`WFCtx`, `HeapExt`, `ListValVis`,
+`ValValid` invariant) that weren't in the first sketch:
 
 - Substrate (`Black.lean`): ~280 LOC (interpreter, primitives,
   initState, evalProgram). Standard.
-- `Bisim.lean`: ~130 LOC (definitions, well-founded measure,
-  reflexivity/transitivity helpers, `EnvValid.envVis_self`).
-- `Policies.lean`: ~180 LOC (BlackPolicy, library, structural
-  soundness theorems via `split at h`).
-- Fuel monotonicity (mutual block): ~250 LOC. Established
-  technique: `rw [F.eq_def]; simp only at h ⊢; cases hr : F n ...
-  | none => ... | some pr => rw [hr] at h; simp only at h; have hr'
-  := ih_F ...; rw [hr']; simp only; ...`. The eval block has 13
-  cases; each follows the template.
-- Framing (`applyDirect_frame` + companions, mutual): ~400 LOC.
-  Same template, threading `ValVis`/`EnvVis` invariants. The
-  closure case in `applyDirect` is where `EnvVis` extension matters:
-  param indices differ between `s_a` and `s_b`, but the values
-  allocated are `ValVis`-related (input args were related), so the
-  extended envs remain `EnvVis`-related, and the body's eval
-  preserves the relation by IH.
-- `multnExact_soundForCE_first_install` (closure-body trace using
-  `applyDirect_frame` at the inner step): ~150 LOC.
+- `Bisim.lean`: ~1500-2000 LOC. Includes the depth-indexed
+  `ValVis_aux` / `EnvVis_aux` mutual definition, the universal-depth
+  versions, `StateExt` and `HeapExt` (both needed — see
+  *Refinements* below), validity machinery (`ValValid`, `HeapValid`,
+  `EnvValid`), `WFCtx` invariant bundle, two-sided heap-extension
+  lemmas (`ValVis_aux_extends`, `EnvVis_aux_extends` mutually
+  proved), `ListValVis`, characterization lemmas
+  (`ValVis_bool_false_iff`), and the `frame` mutual theorem itself.
+  Roughly half the LOC is the framing proof; the other half is
+  supporting abstractions and lemmas.
+- `Policies.lean`: ~270 LOC (BlackPolicy, library, structural
+  soundness theorems via `split at h`, install-protocol predicates,
+  conditional CE soundness for multn).
 - LLM cascade glue (`Bedrock.lean` / `Elab.lean` / `Runner.lean` /
-  `RunnerMain.lean`): ~600 LOC. Standard Bedrock wrapper plus a
-  spliced-Lean-source elaboration step plus a one-round orchestrator.
+  `RunnerMain.lean`): ~600 LOC. Standard Bedrock wrapper +
+  spliced-Lean-source elaboration + one-round orchestrator. (Ports
+  cleanly from the lean-grey precursor.)
 
-Total: ~2000 LOC across all files. Roughly 4-6 focused sessions
-to assemble, build, and prove.
+Total: ~2700-3200 LOC. Roughly 8-12 focused sessions to assemble,
+build, and prove. The framing theorem alone is the bulk: each of
+the four mutual functions has many cases, each requiring 30-150 LOC
+following established proof templates.
 
 ## Demo
 
@@ -348,26 +374,106 @@ proposes a multn-shaped wrapper as Lean source for an `Expr`, the
 elaborator wraps and runs it under the active policy, the verdict
 is admitted/refused/elab-error.
 
+## Refinements (lessons from the build)
+
+These are abstractions and details that emerged during construction
+and weren't in the initial sketch. They're load-bearing for the
+proofs to go through, so future readers should know about them
+upfront.
+
+### Depth-indexed bisimulation is the primary approach
+
+Earlier drafts of this document framed depth-indexing as a fallback
+("if the well-founded measure doesn't work, use fuel-indexed
+family"). It turned out to be the right primary choice: well-founded
+recursion through arbitrary heap-looked-up `Val`s doesn't have a
+natural measure, while depth-indexing gives `ValVis_aux` structural
+recursion in `Nat`. The "real" relations are
+`ValVis = ∀ n, ValVis_aux n` and `EnvVis = ∀ n, EnvVis_aux n`.
+
+This matches CakeML's pattern (their relations are likewise indexed
+by an approximation depth).
+
+### `HeapExt` vs `StateExt`
+
+`StateExt s_a s_b` (cross-side, with same-policy constraint) is the
+right hypothesis between sides — set!-policy interactions need both
+sides to use the same policy. But `installPolicy` *changes* the
+policy, so same-side state evolution s_a → s_a' breaks `StateExt`.
+We need a separate `HeapExt s_a s_a' := ∃ extras, s_a'.heap = s_a.heap ++ extras`
+(heap-only extension, no policy constraint) for the framing's
+same-side conclusions. Both relations live in `Bisim.lean`.
+
+### `WFCtx` invariant bundle
+
+The framing theorem requires a bundle of invariants:
+`StateExt s_a s_b` + `HeapValid s_a.heap`, `HeapValid s_b.heap` +
+`EnvValid env_a s_a.heap`, `EnvValid env_b s_b.heap` +
+`EnvValid metaEnv s_a.heap`, `EnvValid metaEnv s_b.heap`. Together
+these are the preconditions `EnvVis_aux_extends` needs. Bundling
+them in a `WFCtx` structure is essential — passing seven separate
+hypotheses through every inner case is unworkable.
+
+```lean
+structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
+  state_ext : StateExt s_a s_b
+  hv_a, hv_b   : HeapValid s_{a,b}.heap
+  ev_a, ev_b   : EnvValid env_{a,b} s_{a,b}.heap
+  em_a, em_b   : EnvValid metaEnv s_{a,b}.heap
+```
+
+The framing theorem takes `WFCtx` as input and produces `WFCtx` for
+the result state.
+
+### `ValValid` outputs in framing
+
+To chain framing across multi-step recursive cases (notably `.app`'s
+3-step trace: eval f → evalList args → applyVia), the framing
+conclusion needs to produce `ValValid r_a s_a'.heap` and
+`ValValid r_b s_b'.heap` so the result values can be lifted via
+`ValVis_extends` into subsequently-extended heaps. This wasn't
+anticipated in the initial sketch; framing's conclusion needs
+strengthening to produce these.
+
+### Pointwise `ListValVis`
+
+For `applyVia` / `applyDirect` framing, the args lists `args_a` and
+`args_b` need pointwise `ValVis`, not just length equality.
+Captured by:
+
+```lean
+def ListValVis : List Val → List Val → Heap → Heap → Prop
+  | [],      [],      _,   _   => True
+  | x :: xs, y :: ys, h_a, h_b => ValVis x y h_a h_b ∧ ListValVis xs ys h_a h_b
+  | _,       _,       _,   _   => False
+```
+
+`evalList`'s framing conclusion produces `ListValVis rs_a rs_b`;
+`applyVia` / `applyDirect` framing takes it as a hypothesis.
+
+### `.quote` and `ClosedVal`
+
+The `.quote v` case requires `ValVis v v` across two different
+heaps. For atomic Vals (numbers, booleans, etc.), this is trivial;
+for `.cons` and `.closure`, it requires validity hypotheses. The
+honest fix is a `ClosedVal v` predicate restricting quoted Vals to
+those without closure references, or assuming `ValValid v` on both
+heaps. Stage 3 work item.
+
 ## Risks
 
-- **Mutual `ValVis`/`EnvVis` definition might not elaborate
-  cleanly.** Lean 4 supports well-founded mutual recursion but the
-  termination measure has to satisfy the kernel. If the natural
-  size measure doesn't work, fall back to a fuel-indexed family
-  `ValVis_n`/`EnvVis_n` and prove framing for sufficient depth.
-  Less elegant but always works.
-
-- **Sub-cases in framing might be tedious.** Each function in the
-  mutual block has many cases (`eval` has 13). The pattern is
-  uniform but verbose, similar to fuel monotonicity. No conceptual
-  novelty per case, just typing.
+- **Sub-cases in framing are tedious.** Each function in the mutual
+  block has many cases (`eval` has 13). The pattern is uniform but
+  verbose, similar to fuel monotonicity. The proof template
+  (`rw [F.eq_def]; simp only at h ⊢; cases hr : F n ... | none =>
+  ... | some pr => ...; ih_F ...`) is established and works; the
+  remaining work is mostly typing.
 
 - **Closure's body-equality requirement might be too strong.** The
   framing requires `body_a = body_b` for closures to relate. If the
   closures we hand to `applyDirect` are produced by *different*
   evaluations, their bodies are equal (we're not compiling), so this
-  should hold automatically. But proving it for specific use cases
-  may need lemmas about how eval preserves body identity.
+  should hold automatically.
 
 These are sequencing risks, not blocking risks — none require new
 conceptual work beyond what the design lays out.
