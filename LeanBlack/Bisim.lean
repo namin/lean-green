@@ -311,6 +311,152 @@ theorem ValVis_aux_self_extend (n : Nat) :
           intro v' hv_valid
           exact ih v' h_a extras hh hv_valid
 
+/-! ## Heap-extension lemmas
+
+    The key building block for framing: bisimulation between
+    `(v_a, v_b)` (or `(env_a, env_b)`) is preserved when both heaps
+    grow by appended extras. Validity hypotheses ensure that closure
+    cenv references stay in the original heap prefix, so heap
+    lookups in the extended heaps give the same `Val`s as before.
+
+    Both proofs go by induction on depth `n`. The closure case at
+    depth `n+1` uses `EnvVis_aux_extends` at depth `n`, which uses
+    `ValVis_aux_extends` at depth `n` (the IH).
+
+    Stage-3 work item: full proof. For now, the lemmas are stated
+    so the framing theorem above can be structured against them,
+    making the dependency explicit. -/
+
+mutual
+
+theorem ValVis_aux_extends : ∀ (n : Nat) (v_a v_b : Val)
+    (h_a h_b ext_a ext_b : Heap),
+    HeapValid h_a → HeapValid h_b →
+    ValValid v_a h_a → ValValid v_b h_b →
+    ValVis_aux n v_a v_b h_a h_b →
+    ValVis_aux n v_a v_b (h_a ++ ext_a) (h_b ++ ext_b)
+  | 0, _, _, _, _, _, _, _, _, _, _, _ => trivial
+  | _ + 1, .num _,            .num _,            _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .bool _,           .bool _,           _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .nilV,             .nilV,             _, _, _, _, _, _, _, _, _ => trivial
+  | _ + 1, .sym _,            .sym _,            _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .prim _,           .prim _,           _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .builtinBaseApply, .builtinBaseApply, _, _, _, _, _, _, _, _, _ => trivial
+  | n + 1, .cons x_a y_a, .cons x_b y_b, h_a, h_b, ext_a, ext_b,
+      hh_a, hh_b, hv_a, hv_b, h_vis =>
+      ⟨ValVis_aux_extends n x_a x_b h_a h_b ext_a ext_b
+          hh_a hh_b hv_a.1 hv_b.1 h_vis.1,
+       ValVis_aux_extends n y_a y_b h_a h_b ext_a ext_b
+          hh_a hh_b hv_a.2 hv_b.2 h_vis.2⟩
+  | n + 1, .closure ps_a body_a cenv_a, .closure ps_b body_b cenv_b,
+      h_a, h_b, ext_a, ext_b, hh_a, hh_b, hv_a, hv_b, h_vis =>
+      ⟨h_vis.1, h_vis.2.1,
+       EnvVis_aux_extends n cenv_a cenv_b h_a h_b ext_a ext_b
+          hh_a hh_b hv_a hv_b h_vis.2.2⟩
+  -- Mismatched constructor pairs at depth ≥ 1: h_vis is `False`.
+  | _ + 1, .num _,            .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .builtinBaseApply, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .num _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .bool _,           _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .nilV,             _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .cons _ _,         _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .sym _,            _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .closure _ _ _,    _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .prim _,           _, _, _, _, _, _, _, _, h => h.elim
+
+theorem EnvVis_aux_extends (n : Nat) :
+    ∀ (env_a env_b : Env) (h_a h_b ext_a ext_b : Heap),
+      HeapValid h_a → HeapValid h_b →
+      EnvValid env_a h_a → EnvValid env_b h_b →
+      EnvVis_aux n env_a env_b h_a h_b →
+      EnvVis_aux n env_a env_b (h_a ++ ext_a) (h_b ++ ext_b) := by
+  intro env_a env_b h_a h_b ext_a ext_b hh_a hh_b hv_a hv_b h_vis x
+  have h_x := h_vis x
+  cases hl_a : env_a.lookup x with
+  | none =>
+      rw [hl_a] at h_x
+      cases hl_b : env_b.lookup x with
+      | none => simp [hl_a, hl_b]
+      | some _ => rw [hl_b] at h_x; simp at h_x
+  | some i_a =>
+      rw [hl_a] at h_x
+      cases hl_b : env_b.lookup x with
+      | none => rw [hl_b] at h_x; simp at h_x
+      | some i_b =>
+          rw [hl_b] at h_x
+          simp only at h_x
+          have h_lt_a : i_a < h_a.length := hv_a x i_a hl_a
+          have h_lt_b : i_b < h_b.length := hv_b x i_b hl_b
+          have h_eq_a : (h_a ++ ext_a)[i_a]? = h_a[i_a]? :=
+            getElem?_prefix h_a ext_a i_a h_lt_a
+          have h_eq_b : (h_b ++ ext_b)[i_b]? = h_b[i_b]? :=
+            getElem?_prefix h_b ext_b i_b h_lt_b
+          -- Goal (after cases): match some i_a, some i_b with ... (in ext heaps)
+          simp only [hl_a, hl_b]
+          -- Simp reduces the outer match (since both args are some); goal is
+          -- now the inner match on heap lookups in extended heaps.
+          rw [h_eq_a, h_eq_b]
+          cases hp_a : h_a[i_a]? with
+          | none => rw [hp_a] at h_x; simp at h_x
+          | some v_a =>
+              cases hp_b : h_b[i_b]? with
+              | none => rw [hp_a, hp_b] at h_x; simp at h_x
+              | some v_b =>
+                  rw [hp_a, hp_b] at h_x
+                  have hv_va : ValValid v_a h_a := hh_a i_a v_a hp_a
+                  have hv_vb : ValValid v_b h_b := hh_b i_b v_b hp_b
+                  exact ValVis_aux_extends n v_a v_b h_a h_b ext_a ext_b
+                    hh_a hh_b hv_va hv_vb h_x
+
+end
+
 /-! ## Framing theorem (joint mutual statement)
 
     The headline statement: each function in the four-way mutual
