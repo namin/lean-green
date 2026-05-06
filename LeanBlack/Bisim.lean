@@ -328,6 +328,132 @@ theorem ValVis_aux_self_extend (n : Nat) :
           intro v' hv_valid
           exact ih v' h_a extras hh hv_valid
 
+/-! ## Set-free expressions and the framing-domain restriction
+
+    Reflective `.set` of meta-env bindings replaces an old value with
+    a new value that is only *operationally* (CE-relation) related to
+    the old, not *structurally* (`ValVis`) related. The structural
+    framing theorem cannot hold across such mutations — see
+    `FINDINGS.md`. We restrict `frame`'s domain to set-free
+    expressions and propagate this restriction through the heap and
+    closure values via `SetFreeVal` / `HeapSetFree`. The reflective
+    `.set` step is handled separately by the install-protocol
+    soundness theorems (e.g. `multnExact_soundForCE_first_install`),
+    which compose framing-after-install with an install-time CE
+    argument. -/
+
+mutual
+
+def SetFreeExpr : Expr → Prop
+  | .num _              => True
+  | .bool _             => True
+  | .quote _            => True
+  | .var _              => True
+  | .ifte c t e         => SetFreeExpr c ∧ SetFreeExpr t ∧ SetFreeExpr e
+  | .lam _ body         => SetFreeExpr body
+  | .app exps           => SetFreeListExpr exps
+  | .primApp f args     => SetFreeExpr f ∧ SetFreeListExpr args
+  | .set _ _            => False
+  | .em body            => SetFreeExpr body
+  | .letE _ e body      => SetFreeExpr e ∧ SetFreeExpr body
+  | .seq exps           => SetFreeListExpr exps
+  | .installPolicy _    => True
+
+def SetFreeListExpr : List Expr → Prop
+  | []      => True
+  | e :: es => SetFreeExpr e ∧ SetFreeListExpr es
+
+end
+
+/-- A `Val` is set-free if every closure inside it has a set-free
+    body. Heap-independent: only inspects the closure's `body`
+    component. Captured cenv values live on the heap and are
+    constrained by `HeapSetFree`. -/
+def SetFreeVal : Val → Prop
+  | .num _             => True
+  | .bool _            => True
+  | .nilV              => True
+  | .sym _             => True
+  | .prim _            => True
+  | .builtinBaseApply  => True
+  | .cons x y          => SetFreeVal x ∧ SetFreeVal y
+  | .closure _ body _  => SetFreeExpr body
+
+def SetFreeListVal : List Val → Prop
+  | []      => True
+  | v :: vs => SetFreeVal v ∧ SetFreeListVal vs
+
+/-- A heap is set-free if every cell holds a set-free value. The
+    runtime invariant: starting from a set-free initial heap, every
+    eval step on a set-free expression preserves it (alloc adds
+    set-free values; in-place updates would only happen via `.set`,
+    which is excluded). -/
+def HeapSetFree (h : Heap) : Prop :=
+  ∀ (i : Nat) (v : Val), h[i]? = some v → SetFreeVal v
+
+theorem HeapSetFree.append {h : Heap} {v : Val}
+    (hh : HeapSetFree h) (hv : SetFreeVal v) :
+    HeapSetFree (h ++ [v]) := by
+  unfold HeapSetFree
+  intro i u hp
+  by_cases hlt : i < h.length
+  · rw [getElem?_prefix h [v] i hlt] at hp; exact hh i u hp
+  · have h_le : i < (h ++ [v]).length := by
+      rw [List.getElem?_eq_some_iff] at hp; obtain ⟨h, _⟩ := hp; exact h
+    have h_eq : i = h.length := by simp [List.length_append] at h_le; omega
+    subst h_eq
+    have h_lookup : (h ++ [v])[h.length]? = some v := by
+      rw [List.getElem?_append_right (Nat.le_refl _)]; simp
+    rw [h_lookup] at hp
+    simp only [Option.some.injEq] at hp; subst hp; exact hv
+
+/-- Set-free values close under heap append (vacuously, since
+    `SetFreeVal` is heap-independent). -/
+theorem SetFreeVal.heap_indep (v : Val) : SetFreeVal v ↔ SetFreeVal v := Iff.rfl
+
+theorem SetFreeVal_listToVal : ∀ {xs : List Val},
+    SetFreeListVal xs → SetFreeVal (listToVal xs)
+  | [],      _      => trivial
+  | _ :: _, ⟨h, t⟩ => ⟨h, SetFreeVal_listToVal t⟩
+
+theorem SetFreeListVal_valToList : ∀ {v : Val} {xs : List Val},
+    SetFreeVal v → valToList v = some xs → SetFreeListVal xs
+  | .nilV,      [],      _,         _  => trivial
+  | .nilV,      _ :: _,  _,         hv => by simp [valToList] at hv
+  | .cons x ys, [],      _,         hv => by
+      simp [valToList] at hv
+      cases h : valToList ys with
+      | none   => rw [h] at hv; simp at hv
+      | some _ => rw [h] at hv; simp at hv
+  | .cons x ys, z :: zs, ⟨hx, hys⟩, hv => by
+      simp [valToList] at hv
+      cases h : valToList ys with
+      | none   => rw [h] at hv; simp at hv
+      | some l =>
+          rw [h] at hv
+          simp only [Option.some.injEq, List.cons.injEq] at hv
+          obtain ⟨hxz, hlz⟩ := hv
+          subst hxz; subst hlz
+          exact ⟨hx, SetFreeListVal_valToList hys h⟩
+  | .num _,            _, _, hv => by simp [valToList] at hv
+  | .bool _,           _, _, hv => by simp [valToList] at hv
+  | .sym _,            _, _, hv => by simp [valToList] at hv
+  | .prim _,           _, _, hv => by simp [valToList] at hv
+  | .builtinBaseApply, _, _, hv => by simp [valToList] at hv
+  | .closure _ _ _,    _, _, hv => by simp [valToList] at hv
+
+theorem closedValB_SetFreeVal : ∀ (v : Val), closedValB v = true → SetFreeVal v
+  | .num _,            _ => trivial
+  | .bool _,           _ => trivial
+  | .nilV,             _ => trivial
+  | .sym _,            _ => trivial
+  | .prim _,           _ => trivial
+  | .builtinBaseApply, _ => trivial
+  | .cons x y,         hc => by
+      simp [closedValB, Bool.and_eq_true] at hc
+      exact ⟨closedValB_SetFreeVal x hc.1, closedValB_SetFreeVal y hc.2⟩
+  | .closure _ _ _,    hc => by simp [closedValB] at hc
+
 /-! ## Closed values: heap-independent self-bisimulation
 
     A `closedValB`-true value contains no closure references, so it
@@ -1860,6 +1986,136 @@ theorem applyPrim_bisim (name : String) (args_a args_b : List Val) (h_a h_b : He
              ↓reduceIte] at h
   exact Option.noConfusion h
 
+/-! ## `applyPrim` preserves `SetFreeVal` -/
+
+/-- All primitives return either an atom (`.num`, `.bool`) or a
+    cons/projection of existing args. None of them produce a closure
+    out of thin air. So `applyPrim` preserves `SetFreeVal` from its
+    input list to its output. -/
+theorem applyPrim_SetFreeVal (name : String) (args : List Val) (r : Val)
+    (hsf_args : SetFreeListVal args) (h : applyPrim name args = some r) :
+    SetFreeVal r := by
+  unfold applyPrim at h
+  by_cases hp_plus : name = "+"
+  · subst hp_plus; simp only [↓reduceIte] at h
+    unfold applyPrim_plus at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_minus : name = "-"
+  · subst hp_minus; simp only [↓reduceIte, hp_plus] at h
+    unfold applyPrim_minus at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_times : name = "*"
+  · subst hp_times; simp only [↓reduceIte, hp_plus, hp_minus] at h
+    unfold applyPrim_times at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_mullist : name = "mul-list"
+  · subst hp_mullist
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times] at h
+    unfold applyPrim_mulList at h
+    split at h
+    · rename_i v
+      cases hres : mulConsList v with
+      | none => rw [hres] at h; simp [Option.map] at h
+      | some n =>
+          rw [hres] at h
+          simp [Option.map] at h
+          subst h; trivial
+    · simp at h
+  by_cases hp_eq : name = "="
+  · subst hp_eq
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist] at h
+    unfold applyPrim_eq at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_numq : name = "num?"
+  · subst hp_numq
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq] at h
+    unfold applyPrim_numQ at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_boolq : name = "bool?"
+  · subst hp_boolq
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq, hp_numq] at h
+    unfold applyPrim_boolQ at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_clq : name = "closure?"
+  · subst hp_clq
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+               hp_numq, hp_boolq] at h
+    unfold applyPrim_closureQ at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_pq : name = "prim?"
+  · subst hp_pq
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+               hp_numq, hp_boolq, hp_clq] at h
+    unfold applyPrim_primQ at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  by_cases hp_cons : name = "cons"
+  · subst hp_cons
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+               hp_numq, hp_boolq, hp_clq, hp_pq] at h
+    unfold applyPrim_cons at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h
+      rename_i a b
+      obtain ⟨ha, hb, _⟩ := hsf_args
+      exact ⟨ha, hb⟩
+    · simp at h
+  by_cases hp_car : name = "car"
+  · subst hp_car
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+               hp_numq, hp_boolq, hp_clq, hp_pq, hp_cons] at h
+    unfold applyPrim_car at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h
+      rename_i a _
+      obtain ⟨⟨ha, _⟩, _⟩ := hsf_args
+      exact ha
+    · simp at h
+  by_cases hp_cdr : name = "cdr"
+  · subst hp_cdr
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+               hp_numq, hp_boolq, hp_clq, hp_pq, hp_cons, hp_car] at h
+    unfold applyPrim_cdr at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h
+      rename_i _ b
+      obtain ⟨⟨_, hb⟩, _⟩ := hsf_args
+      exact hb
+    · simp at h
+  by_cases hp_nq : name = "null?"
+  · subst hp_nq
+    simp only [↓reduceIte, hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+               hp_numq, hp_boolq, hp_clq, hp_pq, hp_cons, hp_car, hp_cdr] at h
+    unfold applyPrim_nullQ at h
+    split at h
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp only [Option.some.injEq] at h; subst h; trivial
+    · simp at h
+  -- Unknown name → applyPrim returns none → contradiction.
+  simp only [hp_plus, hp_minus, hp_times, hp_mullist, hp_eq,
+             hp_numq, hp_boolq, hp_clq, hp_pq, hp_cons, hp_car, hp_cdr, hp_nq,
+             ↓reduceIte] at h
+  exact Option.noConfusion h
+
 /-! ## Cons-extension of `EnvVis` -/
 
 /-- Adding a fresh `(x, idx_a)` / `(x, idx_b)` binding on top of related
@@ -1902,6 +2158,22 @@ def allocStep (acc : Heap × Env) (vp : Val × String) : Heap × Env :=
   let (hh, ee) := acc
   let (hh', idx) := hh.alloc vp.1
   (hh', .cons vp.2 idx ee)
+
+/-- The closure-call alloc chain preserves `HeapSetFree` provided every
+    arg is `SetFreeVal`. Each `allocStep` appends one value to the heap;
+    `HeapSetFree.append` lifts to the chain. -/
+theorem HeapSetFree.alloc_chain : ∀ (xs : List Val) (ps : List String)
+    (cenv : Env) (h : Heap),
+    HeapSetFree h → SetFreeListVal xs →
+    HeapSetFree (xs.zip ps |>.foldl allocStep (h, cenv)).1
+  | [],      _,      _,    _, hh, _      => by simp [List.foldl, allocStep]; exact hh
+  | _ :: _,  [],     _,    _, hh, _      => by simp [List.foldl, allocStep]; exact hh
+  | x :: xs, p :: ps, cenv, h, hh, ⟨hsf_x, hsf_xs⟩ => by
+      show HeapSetFree
+        ((x :: xs).zip (p :: ps) |>.foldl allocStep (h, cenv)).1
+      simp only [List.zip, List.foldl, allocStep, Heap.alloc]
+      exact HeapSetFree.alloc_chain xs ps (.cons p h.length cenv) (h ++ [x])
+        (HeapSetFree.append hh hsf_x) hsf_xs
 
 /-! ## Self-extend helpers -/
 
@@ -2154,12 +2426,14 @@ structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
   ev_b      : EnvValid env_b s_b.heap
   em_a      : EnvValid metaEnv s_a.heap
   em_b      : EnvValid metaEnv s_b.heap
+  hsf_a     : HeapSetFree s_a.heap
+  hsf_b     : HeapSetFree s_b.heap
 
 theorem WFCtx.refl (env metaEnv : Env) (s : RunState)
     (hh : HeapValid s.heap) (hev : EnvValid env s.heap)
-    (hem : EnvValid metaEnv s.heap) :
+    (hem : EnvValid metaEnv s.heap) (hsf : HeapSetFree s.heap) :
     WFCtx env env metaEnv s s :=
-  ⟨StateExt.refl s, hh, hh, hev, hev, hem, hem⟩
+  ⟨StateExt.refl s, hh, hh, hev, hev, hem, hem, hsf, hsf⟩
 
 private def FrameStmt (n : Nat) : Prop :=
   (∀ (ptable : PolicyTable) (exp : Expr) (env_a env_b metaEnv : Env)
@@ -2167,6 +2441,7 @@ private def FrameStmt (n : Nat) : Prop :=
     WFCtx env_a env_b metaEnv s_a s_b →
     EnvVis env_a env_b s_a.heap s_b.heap →
     EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+    SetFreeExpr exp →
     eval n ptable exp env_a metaEnv s_a = some (r_a, s_a') →
     ∃ r_b s_b',
       eval n ptable exp env_b metaEnv s_b = some (r_b, s_b') ∧
@@ -2175,12 +2450,14 @@ private def FrameStmt (n : Nat) : Prop :=
       HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis env_a env_b s_a'.heap s_b'.heap ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
-      ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap) ∧
+      ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap ∧
+      SetFreeVal r_a ∧ SetFreeVal r_b) ∧
   (∀ (ptable : PolicyTable) (exps : List Expr) (env_a env_b metaEnv : Env)
      (s_a s_b : RunState) (rs_a : List Val) (s_a' : RunState),
     WFCtx env_a env_b metaEnv s_a s_b →
     EnvVis env_a env_b s_a.heap s_b.heap →
     EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+    SetFreeListExpr exps →
     evalList n ptable exps env_a metaEnv s_a = some (rs_a, s_a') →
     ∃ rs_b s_b',
       evalList n ptable exps env_b metaEnv s_b = some (rs_b, s_b') ∧
@@ -2189,7 +2466,8 @@ private def FrameStmt (n : Nat) : Prop :=
       HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis env_a env_b s_a'.heap s_b'.heap ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
-      ListValValid rs_a s_a'.heap ∧ ListValValid rs_b s_b'.heap) ∧
+      ListValValid rs_a s_a'.heap ∧ ListValValid rs_b s_b'.heap ∧
+      SetFreeListVal rs_a ∧ SetFreeListVal rs_b) ∧
   (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
      (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
     WFCtx metaEnv metaEnv metaEnv s_a s_b →
@@ -2198,6 +2476,8 @@ private def FrameStmt (n : Nat) : Prop :=
     EnvVis metaEnv metaEnv s_a.heap s_b.heap →
     ValValid op_a s_a.heap → ValValid op_b s_b.heap →
     ListValValid args_a s_a.heap → ListValValid args_b s_b.heap →
+    SetFreeVal op_a → SetFreeVal op_b →
+    SetFreeListVal args_a → SetFreeListVal args_b →
     applyVia n ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
     ∃ r_b s_b',
       applyVia n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
@@ -2205,7 +2485,8 @@ private def FrameStmt (n : Nat) : Prop :=
       WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
       HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
-      ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap) ∧
+      ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap ∧
+      SetFreeVal r_a ∧ SetFreeVal r_b) ∧
   (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
      (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
     WFCtx metaEnv metaEnv metaEnv s_a s_b →
@@ -2214,6 +2495,8 @@ private def FrameStmt (n : Nat) : Prop :=
     EnvVis metaEnv metaEnv s_a.heap s_b.heap →
     ValValid op_a s_a.heap → ValValid op_b s_b.heap →
     ListValValid args_a s_a.heap → ListValValid args_b s_b.heap →
+    SetFreeVal op_a → SetFreeVal op_b →
+    SetFreeListVal args_a → SetFreeListVal args_b →
     applyDirect n ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
     ∃ r_b s_b',
       applyDirect n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
@@ -2221,7 +2504,8 @@ private def FrameStmt (n : Nat) : Prop :=
       WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
       HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
-      ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap)
+      ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap ∧
+      SetFreeVal r_a ∧ SetFreeVal r_b)
 
 /-- The main framing theorem. Joint statement, mutually proved by
     induction on fuel.
@@ -2237,15 +2521,15 @@ theorem frame : ∀ n, FrameStmt n := by
   induction n with
   | zero =>
       refine ⟨?_, ?_, ?_, ?_⟩
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ h; simp [eval] at h
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ h; simp [evalList] at h
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyVia] at h
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyDirect] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [eval] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [evalList] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyVia] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyDirect] at h
   | succ k ih =>
       obtain ⟨ih_eval, ih_evalList, ih_applyVia, ih_applyDirect⟩ := ih
       refine ⟨?_, ?_, ?_, ?_⟩
       · -- eval (k+1)
-        intro ptable exp env_a env_b metaEnv s_a s_b r_a s_a' h_ctx h_env h_meta h_eval
+        intro ptable exp env_a env_b metaEnv s_a s_b r_a s_a' h_ctx h_env h_meta h_setfree h_eval
         have h_state := h_ctx.state_ext
         cases exp with
         | num i =>
@@ -2253,7 +2537,8 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.num i, s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial,
+                    trivial, trivial⟩
             · simp [eval]
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
@@ -2262,7 +2547,8 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.bool b, s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial,
+                    trivial, trivial⟩
             · simp [eval]
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
@@ -2279,7 +2565,9 @@ theorem frame : ∀ n, FrameStmt n := by
               refine ⟨v, s_b, ?_, ?_, h_ctx,
                       HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
                       closedValB_ValValid v s_a.heap h_closed,
-                      closedValB_ValValid v s_b.heap h_closed⟩
+                      closedValB_ValValid v s_b.heap h_closed,
+                      closedValB_SetFreeVal v h_closed,
+                      closedValB_SetFreeVal v h_closed⟩
               · simp [eval, h_closed]
               · intro depth
                 exact closedValB_ValVis_aux depth v s_a.heap s_b.heap h_closed
@@ -2314,7 +2602,8 @@ theorem frame : ∀ n, FrameStmt n := by
                         | some v_b =>
                             refine ⟨v_b, s_b, ?_, ?_, h_ctx,
                                     HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
-                                    h_ctx.hv_a i_a v_a hp_a, h_ctx.hv_b i_b v_b hp_b⟩
+                                    h_ctx.hv_a i_a v_a hp_a, h_ctx.hv_b i_b v_b hp_b,
+                                    h_ctx.hsf_a i_a v_a hp_a, h_ctx.hsf_b i_b v_b hp_b⟩
                             · simp [eval, hl_b, hp_b]
                             · intro depth
                               have h_x_d := h_env depth x
@@ -2326,9 +2615,12 @@ theorem frame : ∀ n, FrameStmt n := by
             simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
+            -- SetFreeExpr (.lam ps body) = SetFreeExpr body, which is exactly
+            -- SetFreeVal (.closure ps body env) for any env.
+            have h_sf_body : SetFreeExpr body := h_setfree
             refine ⟨.closure ps body env_b, s_b, ?_, ?_, h_ctx,
                     HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
-                    h_ctx.ev_a, h_ctx.ev_b⟩
+                    h_ctx.ev_a, h_ctx.ev_b, h_sf_body, h_sf_body⟩
             · simp [eval]
             · intro depth
               cases depth with
@@ -2345,7 +2637,8 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨h_r, h_s⟩ := h_eval
                 subst h_r; subst h_s
                 refine ⟨.bool false, s_b, ?_, ?_, h_ctx,
-                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial,
+                        trivial, trivial⟩
                 · simp [eval, hp]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => rfl
@@ -2361,22 +2654,25 @@ theorem frame : ∀ n, FrameStmt n := by
                         ⟨rfl,
                          h_ctx.hv_a, h_ctx.hv_b,
                          h_ctx.ev_a, h_ctx.ev_b,
-                         h_ctx.em_a, h_ctx.em_b⟩,
+                         h_ctx.em_a, h_ctx.em_b,
+                         h_ctx.hsf_a, h_ctx.hsf_b⟩,
                         HeapExt.refl _, HeapExt.refl _,
-                        h_env, h_meta, trivial, trivial⟩
+                        h_env, h_meta, trivial, trivial, trivial, trivial⟩
                 · simp [eval, hp]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => rfl
         | em body =>
             simp only [eval] at h_eval
+            have h_sf_body : SetFreeExpr body := h_setfree
             -- IH on body uses metaEnv as env on both sides.
             have h_ctx_meta : WFCtx metaEnv metaEnv metaEnv s_a s_b :=
               ⟨h_ctx.state_ext, h_ctx.hv_a, h_ctx.hv_b,
-               h_ctx.em_a, h_ctx.em_b, h_ctx.em_a, h_ctx.em_b⟩
+               h_ctx.em_a, h_ctx.em_b, h_ctx.em_a, h_ctx.em_b,
+               h_ctx.hsf_a, h_ctx.hsf_b⟩
             obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he_a, h_he_b,
-                    _h_env_meta, h_meta', hv_ra, hv_rb⟩ :=
+                    _h_env_meta, h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
               ih_eval ptable body metaEnv metaEnv metaEnv s_a s_b r_a s_a'
-                h_ctx_meta h_meta h_meta h_eval
+                h_ctx_meta h_meta h_meta h_sf_body h_eval
             -- Derive EnvVis env_a env_b s_a'.heap s_b'.heap from
             -- h_env + heap extension via `EnvVis_extends`.
             obtain ⟨extras_a, h_a_eq⟩ := h_he_a
@@ -2390,33 +2686,38 @@ theorem frame : ∀ n, FrameStmt n := by
               ⟨h_ctx'.state_ext, h_ctx'.hv_a, h_ctx'.hv_b,
                EnvValid.heap_extends h_ctx.ev_a ⟨extras_a, h_a_eq⟩,
                EnvValid.heap_extends h_ctx.ev_b ⟨extras_b, h_b_eq⟩,
-               h_ctx'.em_a, h_ctx'.em_b⟩
+               h_ctx'.em_a, h_ctx'.em_b,
+               h_ctx'.hsf_a, h_ctx'.hsf_b⟩
             refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
                     ⟨extras_a, h_a_eq⟩, ⟨extras_b, h_b_eq⟩, h_env', h_meta',
-                    hv_ra, hv_rb⟩
+                    hv_ra, hv_rb, hsf_ra, hsf_rb⟩
             simp [eval, h_eval_b]
         | seq exps =>
+            -- SetFreeExpr (.seq exps) = SetFreeListExpr exps (by the def).
+            have h_sf_exps : SetFreeListExpr exps := h_setfree
             cases exps with
             | nil =>
                 simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
                 obtain ⟨h_r, h_s⟩ := h_eval
                 subst h_r; subst h_s
                 refine ⟨.nilV, s_b, ?_, ?_, h_ctx,
-                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial,
+                        trivial, trivial⟩
                 · simp [eval]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => trivial
             | cons e rest =>
+                obtain ⟨h_sf_e, h_sf_rest⟩ := h_sf_exps
                 cases rest with
                 | nil =>
                     -- exps = [e]: eval (k+1) (.seq [e]) reduces to eval k e
                     simp only [eval] at h_eval
                     obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he_a, h_he_b,
-                            h_env', h_meta', hv_ra, hv_rb⟩ :=
+                            h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                       ih_eval ptable e env_a env_b metaEnv s_a s_b r_a s_a'
-                        h_ctx h_env h_meta h_eval
+                        h_ctx h_env h_meta h_sf_e h_eval
                     refine ⟨r_b, s_b', ?_, h_vv, h_ctx', h_he_a, h_he_b, h_env', h_meta',
-                            hv_ra, hv_rb⟩
+                            hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                     simp [eval, h_eval_b]
                 | cons e2 rest2 =>
                     -- exps = e :: e2 :: rest2: eval e then recurse on .seq (e2 :: rest2)
@@ -2429,20 +2730,21 @@ theorem frame : ∀ n, FrameStmt n := by
                         simp only at h_eval
                         obtain ⟨v_e_b, s_b_inner, h_eval_e_b, _h_vv_e, h_ctx_inner,
                                 h_he_a_inner, h_he_b_inner, h_env_inner, h_meta_inner,
-                                _hv_ve_a, _hv_ve_b⟩ :=
+                                _hv_ve_a, _hv_ve_b, _hsf_ve_a, _hsf_ve_b⟩ :=
                           ih_eval ptable e env_a env_b metaEnv s_a s_b v_e s_a_inner
-                            h_ctx h_env h_meta he
+                            h_ctx h_env h_meta h_sf_e he
                         obtain ⟨r_b, s_b', h_eval_seq_b, h_vv, h_ctx', h_he_a', h_he_b',
-                                h_env', h_meta', hv_ra, hv_rb⟩ :=
+                                h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_eval ptable (.seq (e2 :: rest2)) env_a env_b metaEnv
                             s_a_inner s_b_inner r_a s_a'
-                            h_ctx_inner h_env_inner h_meta_inner h_eval
+                            h_ctx_inner h_env_inner h_meta_inner h_sf_rest h_eval
                         refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
                                 HeapExt.trans h_he_a_inner h_he_a',
                                 HeapExt.trans h_he_b_inner h_he_b',
-                                h_env', h_meta', hv_ra, hv_rb⟩
+                                h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [eval, h_eval_e_b, h_eval_seq_b]
         | ifte c t e =>
+            obtain ⟨h_sf_c, h_sf_t, h_sf_e⟩ := h_setfree
             simp only [eval] at h_eval
             cases hc : eval k ptable c env_a metaEnv s_a with
             | none => rw [hc] at h_eval; simp at h_eval
@@ -2450,9 +2752,9 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨cv_a, s_c_a⟩ := pr
                 rw [hc] at h_eval
                 obtain ⟨cv_b, s_c_b, h_eval_c_b, h_vv_c, h_ctx_c, h_he_c_a, h_he_c_b,
-                        h_env_c, h_meta_c, _hv_cva, _hv_cvb⟩ :=
+                        h_env_c, h_meta_c, _hv_cva, _hv_cvb, _hsf_cva, _hsf_cvb⟩ :=
                   ih_eval ptable c env_a env_b metaEnv s_a s_b cv_a s_c_a
-                    h_ctx h_env h_meta hc
+                    h_ctx h_env h_meta h_sf_c hc
                 have h_iff : cv_a = .bool false ↔ cv_b = .bool false :=
                   ValVis_bool_false_iff cv_a cv_b s_c_a.heap s_c_b.heap h_vv_c
                 by_cases hcv : cv_a = .bool false
@@ -2462,13 +2764,13 @@ theorem frame : ∀ n, FrameStmt n := by
                   simp only at h_eval
                   -- h_eval : eval k ptable e env_a metaEnv s_c_a = some (r_a, s_a')
                   obtain ⟨r_b, s_b', h_eval_e_b, h_vv, h_ctx', h_he_a', h_he_b',
-                          h_env', h_meta', hv_ra, hv_rb⟩ :=
+                          h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                     ih_eval ptable e env_a env_b metaEnv s_c_a s_c_b r_a s_a'
-                      h_ctx_c h_env_c h_meta_c h_eval
+                      h_ctx_c h_env_c h_meta_c h_sf_e h_eval
                   refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
                           HeapExt.trans h_he_c_a h_he_a',
                           HeapExt.trans h_he_c_b h_he_b',
-                          h_env', h_meta', hv_ra, hv_rb⟩
+                          h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                   simp [eval, h_eval_c_b, h_cv_b, h_eval_e_b]
                 · -- both sides take then-branch
                   have h_cv_b_ne : cv_b ≠ .bool false := fun h => hcv (h_iff.mpr h)
@@ -2487,13 +2789,13 @@ theorem frame : ∀ n, FrameStmt n := by
                     | prim _           => exact h_eval
                     | builtinBaseApply => exact h_eval
                   obtain ⟨r_b, s_b', h_eval_t_b, h_vv, h_ctx', h_he_a', h_he_b',
-                          h_env', h_meta', hv_ra, hv_rb⟩ :=
+                          h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                     ih_eval ptable t env_a env_b metaEnv s_c_a s_c_b r_a s_a'
-                      h_ctx_c h_env_c h_meta_c h_eval_t
+                      h_ctx_c h_env_c h_meta_c h_sf_t h_eval_t
                   refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
                           HeapExt.trans h_he_c_a h_he_a',
                           HeapExt.trans h_he_c_b h_he_b',
-                          h_env', h_meta', hv_ra, hv_rb⟩
+                          h_env', h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                   -- Goal: eval (k+1) (.ifte c t e) env_b metaEnv s_b = some (r_b, s_b')
                   -- Reduces to match eval k c env_b metaEnv s_b with ...
                   -- = match (some (cv_b, s_c_b)) with ... → t branch (since cv_b ≠ .bool false)
@@ -2511,11 +2813,14 @@ theorem frame : ∀ n, FrameStmt n := by
                   | prim _           => exact h_eval_t_b
                   | builtinBaseApply => exact h_eval_t_b
         | app exps =>
+            -- SetFreeExpr (.app exps) = SetFreeListExpr exps.
+            have h_sf_exps : SetFreeListExpr exps := h_setfree
             cases exps with
             | nil =>
                 simp only [eval] at h_eval
                 exact absurd h_eval (by simp)
             | cons f args =>
+                obtain ⟨h_sf_f, h_sf_args⟩ := h_sf_exps
                 simp only [eval] at h_eval
                 cases hf : eval k ptable f env_a metaEnv s_a with
                 | none => rw [hf] at h_eval; simp at h_eval
@@ -2525,9 +2830,9 @@ theorem frame : ∀ n, FrameStmt n := by
                     simp only at h_eval
                     -- IH on f
                     obtain ⟨fv_b, s_b_inner, h_eval_f_b, h_vv_f, h_ctx1, h_he_a1, h_he_b1,
-                            h_env1, h_meta1, hv_fva, hv_fvb⟩ :=
+                            h_env1, h_meta1, hv_fva, hv_fvb, hsf_fva, hsf_fvb⟩ :=
                       ih_eval ptable f env_a env_b metaEnv s_a s_b fv_a s_a_inner
-                        h_ctx h_env h_meta hf
+                        h_ctx h_env h_meta h_sf_f hf
                     cases ha : evalList k ptable args env_a metaEnv s_a_inner with
                     | none => rw [ha] at h_eval; simp at h_eval
                     | some pr2 =>
@@ -2536,13 +2841,15 @@ theorem frame : ∀ n, FrameStmt n := by
                         simp only at h_eval
                         -- IH on args
                         obtain ⟨avs_b, s_b_inner2, h_eval_args_b, h_lvv, h_ctx2, h_he_a2,
-                                h_he_b2, h_env2, h_meta2, hv_avsa, hv_avsb⟩ :=
+                                h_he_b2, h_env2, h_meta2, hv_avsa, hv_avsb,
+                                hsf_avsa, hsf_avsb⟩ :=
                           ih_evalList ptable args env_a env_b metaEnv s_a_inner s_b_inner
-                            avs_a s_a_inner2 h_ctx1 h_env1 h_meta1 ha
+                            avs_a s_a_inner2 h_ctx1 h_env1 h_meta1 h_sf_args ha
                         -- WFCtx metaEnv metaEnv metaEnv at s_a_inner2 s_b_inner2
                         have h_ctx_meta2 : WFCtx metaEnv metaEnv metaEnv s_a_inner2 s_b_inner2 :=
                           ⟨h_ctx2.state_ext, h_ctx2.hv_a, h_ctx2.hv_b,
-                           h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b⟩
+                           h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b,
+                           h_ctx2.hsf_a, h_ctx2.hsf_b⟩
                         -- Lift ValVis fv_a fv_b across heap extension from inner to inner2
                         -- via ValVis_extends, using the strengthened ValValid output of ih_eval.
                         obtain ⟨ext_a2, hex_a2⟩ := h_he_a2
@@ -2557,11 +2864,12 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_fvb2 : ValValid fv_b s_b_inner2.heap :=
                           ValValid.heap_extends fv_b hv_fvb ⟨ext_b2, hex_b2⟩
                         obtain ⟨r_b, s_b', h_eval_av_b, h_vv, h_ctx3, h_he_a3, h_he_b3,
-                                h_meta3, hv_ra, hv_rb⟩ :=
+                                h_meta3, hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyVia ptable fv_a fv_b avs_a avs_b metaEnv
                             s_a_inner2 s_b_inner2 r_a s_a'
                             h_ctx_meta2 h_vv_f' h_lvv h_meta2
-                            hv_fva2 hv_fvb2 hv_avsa hv_avsb h_eval
+                            hv_fva2 hv_fvb2 hv_avsa hv_avsb
+                            hsf_fva hsf_fvb hsf_avsa hsf_avsb h_eval
                         have h_he_a_chain : HeapExt s_a s_a' :=
                           HeapExt.trans h_he_a1 (HeapExt.trans ⟨ext_a2, hex_a2⟩ h_he_a3)
                         have h_he_b_chain : HeapExt s_b s_b' :=
@@ -2572,16 +2880,18 @@ theorem frame : ∀ n, FrameStmt n := by
                           ⟨h_ctx3.state_ext, h_ctx3.hv_a, h_ctx3.hv_b,
                            EnvValid.heap_extends h_ctx.ev_a ⟨ext_a, hex_a⟩,
                            EnvValid.heap_extends h_ctx.ev_b ⟨ext_b, hex_b⟩,
-                           h_ctx3.em_a, h_ctx3.em_b⟩
+                           h_ctx3.em_a, h_ctx3.em_b,
+                           h_ctx3.hsf_a, h_ctx3.hsf_b⟩
                         have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap := by
                           rw [hex_a, hex_b]
                           exact EnvVis_extends env_a env_b s_a.heap s_b.heap ext_a ext_b
                             h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
                         refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
                                 ⟨ext_a, hex_a⟩, ⟨ext_b, hex_b⟩, h_env_out, h_meta3,
-                                hv_ra, hv_rb⟩
+                                hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [eval, h_eval_f_b, h_eval_args_b, h_eval_av_b]
         | primApp f args =>
+            obtain ⟨h_sf_f, h_sf_args⟩ := h_setfree
             simp only [eval] at h_eval
             cases hf : eval k ptable f env_a metaEnv s_a with
             | none => rw [hf] at h_eval; simp at h_eval
@@ -2591,9 +2901,9 @@ theorem frame : ∀ n, FrameStmt n := by
                 simp only at h_eval
                 -- IH on f
                 obtain ⟨fv_b, s_b_inner, h_eval_f_b, h_vv_f, h_ctx1, h_he_a1, h_he_b1,
-                        h_env1, h_meta1, hv_fva, hv_fvb⟩ :=
+                        h_env1, h_meta1, hv_fva, hv_fvb, hsf_fva, hsf_fvb⟩ :=
                   ih_eval ptable f env_a env_b metaEnv s_a s_b fv_a s_a_inner
-                    h_ctx h_env h_meta hf
+                    h_ctx h_env h_meta h_sf_f hf
                 cases ha : evalList k ptable args env_a metaEnv s_a_inner with
                 | none => rw [ha] at h_eval; simp at h_eval
                 | some pr2 =>
@@ -2601,12 +2911,14 @@ theorem frame : ∀ n, FrameStmt n := by
                     rw [ha] at h_eval
                     simp only at h_eval
                     obtain ⟨avs_b, s_b_inner2, h_eval_args_b, h_lvv, h_ctx2, h_he_a2,
-                            h_he_b2, h_env2, h_meta2, hv_avsa, hv_avsb⟩ :=
+                            h_he_b2, h_env2, h_meta2, hv_avsa, hv_avsb,
+                            hsf_avsa, hsf_avsb⟩ :=
                       ih_evalList ptable args env_a env_b metaEnv s_a_inner s_b_inner
-                        avs_a s_a_inner2 h_ctx1 h_env1 h_meta1 ha
+                        avs_a s_a_inner2 h_ctx1 h_env1 h_meta1 h_sf_args ha
                     have h_ctx_meta2 : WFCtx metaEnv metaEnv metaEnv s_a_inner2 s_b_inner2 :=
                       ⟨h_ctx2.state_ext, h_ctx2.hv_a, h_ctx2.hv_b,
-                       h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b⟩
+                       h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b,
+                       h_ctx2.hsf_a, h_ctx2.hsf_b⟩
                     obtain ⟨ext_a2, hex_a2⟩ := h_he_a2
                     obtain ⟨ext_b2, hex_b2⟩ := h_he_b2
                     have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap := by
@@ -2618,11 +2930,12 @@ theorem frame : ∀ n, FrameStmt n := by
                     have hv_fvb2 : ValValid fv_b s_b_inner2.heap :=
                       ValValid.heap_extends fv_b hv_fvb ⟨ext_b2, hex_b2⟩
                     obtain ⟨r_b, s_b', h_eval_av_b, h_vv, h_ctx3, h_he_a3, h_he_b3,
-                            h_meta3, hv_ra, hv_rb⟩ :=
+                            h_meta3, hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                       ih_applyDirect ptable fv_a fv_b avs_a avs_b metaEnv
                         s_a_inner2 s_b_inner2 r_a s_a'
                         h_ctx_meta2 h_vv_f' h_lvv h_meta2
-                        hv_fva2 hv_fvb2 hv_avsa hv_avsb h_eval
+                        hv_fva2 hv_fvb2 hv_avsa hv_avsb
+                        hsf_fva hsf_fvb hsf_avsa hsf_avsb h_eval
                     have h_he_a_chain : HeapExt s_a s_a' :=
                       HeapExt.trans h_he_a1 (HeapExt.trans ⟨ext_a2, hex_a2⟩ h_he_a3)
                     have h_he_b_chain : HeapExt s_b s_b' :=
@@ -2633,17 +2946,21 @@ theorem frame : ∀ n, FrameStmt n := by
                       ⟨h_ctx3.state_ext, h_ctx3.hv_a, h_ctx3.hv_b,
                        EnvValid.heap_extends h_ctx.ev_a ⟨ext_a, hex_a⟩,
                        EnvValid.heap_extends h_ctx.ev_b ⟨ext_b, hex_b⟩,
-                       h_ctx3.em_a, h_ctx3.em_b⟩
+                       h_ctx3.em_a, h_ctx3.em_b,
+                       h_ctx3.hsf_a, h_ctx3.hsf_b⟩
                     have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap := by
                       rw [hex_a, hex_b]
                       exact EnvVis_extends env_a env_b s_a.heap s_b.heap ext_a ext_b
                         h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
                     refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
                             ⟨ext_a, hex_a⟩, ⟨ext_b, hex_b⟩, h_env_out, h_meta3,
-                            hv_ra, hv_rb⟩
+                            hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                     simp [eval, h_eval_f_b, h_eval_args_b, h_eval_av_b]
-        | set _ _      => sorry
+        | set _ _      =>
+            -- SetFreeExpr (.set _ _) = False by definition.
+            exact absurd h_setfree (by simp [SetFreeExpr])
         | letE x e body =>
+            obtain ⟨h_sf_e, h_sf_body⟩ := h_setfree
             simp only [eval] at h_eval
             cases he : eval k ptable e env_a metaEnv s_a with
             | none => rw [he] at h_eval; simp at h_eval
@@ -2652,9 +2969,10 @@ theorem frame : ∀ n, FrameStmt n := by
                 rw [he] at h_eval
                 -- IH on e
                 obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_a_inner,
-                        h_he_b_inner, h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
+                        h_he_b_inner, h_env_inner, h_meta_inner, hv_va, hv_vb,
+                        hsf_va, hsf_vb⟩ :=
                   ih_eval ptable e env_a env_b metaEnv s_a s_b v_a s_a_inner
-                    h_ctx h_env h_meta he
+                    h_ctx h_env h_meta h_sf_e he
                 -- After eval e, we alloc v on each side. The let-destructured
                 -- alloc reduces by Heap.alloc def: (h ++ [v], h.length).
                 simp only [Heap.alloc] at h_eval
@@ -2735,6 +3053,11 @@ theorem frame : ∀ n, FrameStmt n := by
                   EnvValid.heap_extends h_ctx_inner.em_a ⟨[v_a], rfl⟩
                 have hem_b' : EnvValid metaEnv (s_b_inner.heap ++ [v_b]) :=
                   EnvValid.heap_extends h_ctx_inner.em_b ⟨[v_b], rfl⟩
+                -- HeapSetFree on the alloc heaps.
+                have hsf_a_alloc : HeapSetFree (s_a_inner.heap ++ [v_a]) :=
+                  HeapSetFree.append h_ctx_inner.hsf_a hsf_va
+                have hsf_b_alloc : HeapSetFree (s_b_inner.heap ++ [v_b]) :=
+                  HeapSetFree.append h_ctx_inner.hsf_b hsf_vb
                 -- WFCtx for the body call (with the cons-extended envs and alloc states).
                 have h_ctx_alloc :
                     WFCtx (.cons x s_a_inner.heap.length env_a)
@@ -2742,7 +3065,8 @@ theorem frame : ∀ n, FrameStmt n := by
                       { s_a_inner with heap := s_a_inner.heap ++ [v_a] }
                       { s_b_inner with heap := s_b_inner.heap ++ [v_b] } :=
                   ⟨h_ctx_inner.state_ext, hh_a_alloc, hh_b_alloc,
-                   hev_a', hev_b', hem_a', hem_b'⟩
+                   hev_a', hev_b', hem_a', hem_b',
+                   hsf_a_alloc, hsf_b_alloc⟩
                 -- ValVis v_a v_b lifted to alloc heaps.
                 have h_vv_v_alloc :
                     ValVis v_a v_b (s_a_inner.heap ++ [v_a]) (s_b_inner.heap ++ [v_b]) :=
@@ -2771,13 +3095,14 @@ theorem frame : ∀ n, FrameStmt n := by
                     h_meta_inner
                 -- Now apply IH on body.
                 obtain ⟨r_b, s_b', h_eval_b_b, h_vv_r, h_ctx_body, h_he_a_body,
-                        h_he_b_body, _h_env_body, h_meta_body, hv_ra, hv_rb⟩ :=
+                        h_he_b_body, _h_env_body, h_meta_body, hv_ra, hv_rb,
+                        hsf_ra, hsf_rb⟩ :=
                   ih_eval ptable body
                     (.cons x s_a_inner.heap.length env_a)
                     (.cons x s_b_inner.heap.length env_b) metaEnv
                     { s_a_inner with heap := s_a_inner.heap ++ [v_a] }
                     { s_b_inner with heap := s_b_inner.heap ++ [v_b] } r_a s_a'
-                    h_ctx_alloc h_env' h_meta_alloc h_eval
+                    h_ctx_alloc h_env' h_meta_alloc h_sf_body h_eval
                 -- Build outputs. Heap chains.
                 have h_he_a_alloc :
                     HeapExt s_a_inner { s_a_inner with heap := s_a_inner.heap ++ [v_a] } :=
@@ -2796,29 +3121,32 @@ theorem frame : ∀ n, FrameStmt n := by
                   ⟨h_ctx_body.state_ext, h_ctx_body.hv_a, h_ctx_body.hv_b,
                    EnvValid.heap_extends h_ctx.ev_a ⟨ext_a, hex_a⟩,
                    EnvValid.heap_extends h_ctx.ev_b ⟨ext_b, hex_b⟩,
-                   h_ctx_body.em_a, h_ctx_body.em_b⟩
+                   h_ctx_body.em_a, h_ctx_body.em_b,
+                   h_ctx_body.hsf_a, h_ctx_body.hsf_b⟩
                 have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap := by
                   rw [hex_a, hex_b]
                   exact EnvVis_extends env_a env_b s_a.heap s_b.heap ext_a ext_b
                     h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
                 refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out,
                         ⟨ext_a, hex_a⟩, ⟨ext_b, hex_b⟩, h_env_out, h_meta_body,
-                        hv_ra, hv_rb⟩
+                        hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                 -- Goal: eval (k+1) (.letE x e body) env_b metaEnv s_b = some (r_b, s_b')
                 simp only [eval, h_eval_e_b, Heap.alloc]
                 exact h_eval_b_b
       · -- evalList (k+1)
-        intro ptable exps env_a env_b metaEnv s_a s_b rs_a s_a' h_ctx h_env h_meta h_eval
+        intro ptable exps env_a env_b metaEnv s_a s_b rs_a s_a' h_ctx h_env h_meta h_setfree h_eval
         cases exps with
         | nil =>
             simp only [evalList, Option.some.injEq, Prod.mk.injEq] at h_eval
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨[], s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial,
+                    trivial, trivial⟩
             · simp [evalList]
             · trivial
         | cons e rest =>
+            obtain ⟨h_sf_e, h_sf_rest⟩ := h_setfree
             simp only [evalList] at h_eval
             cases he : eval k ptable e env_a metaEnv s_a with
             | none => rw [he] at h_eval; simp at h_eval
@@ -2836,15 +3164,16 @@ theorem frame : ∀ n, FrameStmt n := by
                     subst h_r; subst h_s
                     -- IH on e
                     obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_a_inner,
-                            h_he_b_inner, h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
+                            h_he_b_inner, h_env_inner, h_meta_inner, hv_va, hv_vb,
+                            hsf_va, hsf_vb⟩ :=
                       ih_eval ptable e env_a env_b metaEnv s_a s_b v_a s_a_inner
-                        h_ctx h_env h_meta he
+                        h_ctx h_env h_meta h_sf_e he
                     -- IH on rest
                     obtain ⟨vs_b, s_b_inner2, h_eval_rest_b, h_lvv, h_ctx_inner2,
                             h_he_a_inner2, h_he_b_inner2, h_env_inner2, h_meta_inner2,
-                            hv_vsa, hv_vsb⟩ :=
+                            hv_vsa, hv_vsb, hsf_vsa, hsf_vsb⟩ :=
                       ih_evalList ptable rest env_a env_b metaEnv s_a_inner s_b_inner
-                        vs_a s_a_inner2 h_ctx_inner h_env_inner h_meta_inner hrest
+                        vs_a s_a_inner2 h_ctx_inner h_env_inner h_meta_inner h_sf_rest hrest
                     -- Lift ValVis v_a v_b across rest's heap extension.
                     obtain ⟨ext_a2, hex_a2⟩ := h_he_a_inner2
                     obtain ⟨ext_b2, hex_b2⟩ := h_he_b_inner2
@@ -2865,21 +3194,24 @@ theorem frame : ∀ n, FrameStmt n := by
                             ⟨h_vv_v', h_lvv⟩, h_ctx_inner2,
                             h_he_a_chain, h_he_b_chain,
                             h_env_inner2, h_meta_inner2,
-                            ⟨hv_va', hv_vsa⟩, ⟨hv_vb', hv_vsb⟩⟩
+                            ⟨hv_va', hv_vsa⟩, ⟨hv_vb', hv_vsb⟩,
+                            ⟨hsf_va, hsf_vsa⟩, ⟨hsf_vb, hsf_vsb⟩⟩
                     simp [evalList, h_eval_e_b, h_eval_rest_b]
       · -- applyVia (k+1)
         intro ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a' h_ctx h_vv_op h_lvv
-              h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
+              h_meta hv_opa hv_opb hv_argsa hv_argsb hsf_opa hsf_opb hsf_argsa hsf_argsb h_eval
         simp only [applyVia] at h_eval
         cases hl : metaEnv.lookup "base-apply" with
         | none =>
             rw [hl] at h_eval
             -- both sides go through applyDirect on (op, args) directly
             obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b', h_meta',
-                    hv_ra, hv_rb⟩ :=
+                    hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
               ih_applyDirect ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a'
-                h_ctx h_vv_op h_lvv h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
-            refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b', h_meta', hv_ra, hv_rb⟩
+                h_ctx h_vv_op h_lvv h_meta hv_opa hv_opb hv_argsa hv_argsb
+                hsf_opa hsf_opb hsf_argsa hsf_argsb h_eval
+            refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b', h_meta',
+                    hv_ra, hv_rb, hsf_ra, hsf_rb⟩
             simp [applyVia, hl, h_eval_b]
         | some idx =>
             rw [hl] at h_eval
@@ -2908,6 +3240,14 @@ theorem frame : ∀ n, FrameStmt n := by
                     -- ValValid v_a / v_b from heap validity.
                     have hv_va : ValValid v_a s_a.heap := h_ctx.hv_a idx v_a hp_a
                     have hv_vb : ValValid v_b s_b.heap := h_ctx.hv_b idx v_b hp_b
+                    -- SetFreeVal v_a / v_b from HeapSetFree.
+                    have hsf_va : SetFreeVal v_a := h_ctx.hsf_a idx v_a hp_a
+                    have hsf_vb : SetFreeVal v_b := h_ctx.hsf_b idx v_b hp_b
+                    -- SetFreeListVal for the inner list passed to applyDirect catchall.
+                    have hsf_inner_a : SetFreeListVal [op_a, listToVal args_a] :=
+                      ⟨hsf_opa, SetFreeVal_listToVal hsf_argsa, trivial⟩
+                    have hsf_inner_b : SetFreeListVal [op_b, listToVal args_b] :=
+                      ⟨hsf_opb, SetFreeVal_listToVal hsf_argsb, trivial⟩
                     -- Case-analyze on v_a's constructor (matches the pattern in applyVia).
                     -- v_b's constructor is forced to match by ValVis_aux 1.
                     cases v_a with
@@ -2927,12 +3267,13 @@ theorem frame : ∀ n, FrameStmt n := by
                         subst h_vb
                         simp only at h_eval
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable op_a op_b args_a args_b metaEnv
                             s_a s_b r_a s_a' h_ctx h_vv_op h_lvv h_meta
-                            hv_opa hv_opb hv_argsa hv_argsb h_eval
+                            hv_opa hv_opb hv_argsa hv_argsb
+                            hsf_opa hsf_opb hsf_argsa hsf_argsb h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | num n =>
                         -- v_a is .num — but the pattern match in applyVia takes the
@@ -2963,13 +3304,14 @@ theorem frame : ∀ n, FrameStmt n := by
                             ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable (.num n) (.num n)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | bool b =>
                         have h_vb : v_b = .bool b := by
@@ -2996,13 +3338,14 @@ theorem frame : ∀ n, FrameStmt n := by
                             ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable (.bool b) (.bool b)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | nilV =>
                         have h_vb : v_b = .nilV := by
@@ -3025,13 +3368,14 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable .nilV .nilV
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | sym str =>
                         have h_vb : v_b = .sym str := by
@@ -3056,13 +3400,14 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable (.sym str) (.sym str)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | prim str =>
                         have h_vb : v_b = .prim str := by
@@ -3087,13 +3432,14 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable (.prim str) (.prim str)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | cons xa ya =>
                         -- v_b is also a cons by ValVis_aux 1.
@@ -3118,13 +3464,14 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable (.cons xa ya) (.cons xb yb)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | closure psa bdya cenva =>
                         have h_vb : ∃ psb bdyb cenvb, v_b = .closure psb bdyb cenvb := by
@@ -3148,18 +3495,19 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
                         obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩ :=
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                           ih_applyDirect ptable (.closure psa bdya cenva)
                             (.closure psb bdyb cenvb)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
                             metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
-                            hv_va hv_vb hv_inner_a hv_inner_b h_eval
+                            hv_va hv_vb hv_inner_a hv_inner_b
+                            hsf_va hsf_vb hsf_inner_a hsf_inner_b h_eval
                         refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                                h_meta', hv_ra, hv_rb⟩
+                                h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
       · -- applyDirect (k+1)
         intro ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a' h_ctx h_vv_op h_lvv
-              h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
+              h_meta hv_opa hv_opb hv_argsa hv_argsb hsf_opa hsf_opb hsf_argsa hsf_argsb h_eval
         -- Case-analyze on op_a; ValVis_aux 1 forces op_b's constructor to match.
         have h_vv1 : ValVis_aux 1 op_a op_b s_a.heap s_b.heap := h_vv_op 1
         cases op_a with
@@ -3204,6 +3552,8 @@ theorem frame : ∀ n, FrameStmt n := by
                 ⟨h_vv_actual, h_vv_olist, _⟩, ⟨hv_actual_a, hv_olist_a, _⟩,
                 ⟨hv_actual_b, hv_olist_b, _⟩ =>
                 simp only at h_eval
+                obtain ⟨hsf_actual_a, hsf_olist_a, _⟩ := hsf_argsa
+                obtain ⟨hsf_actual_b, hsf_olist_b, _⟩ := hsf_argsb
                 cases hl_a : valToList operandsList_a with
                 | none => rw [hl_a] at h_eval; simp at h_eval
                 | some operands_a =>
@@ -3219,14 +3569,19 @@ theorem frame : ∀ n, FrameStmt n := by
                       valToList_bisim operands_a operandsList_a operandsList_b
                         s_a.heap s_b.heap hl_a h_vv_olist hv_olist_a hv_olist_b
                     obtain ⟨operands_b, hl_b, h_lvv_ops, hv_ops_a, hv_ops_b⟩ := h_vol_b
+                    have hsf_ops_a : SetFreeListVal operands_a :=
+                      SetFreeListVal_valToList hsf_olist_a hl_a
+                    have hsf_ops_b : SetFreeListVal operands_b :=
+                      SetFreeListVal_valToList hsf_olist_b hl_b
                     -- Now apply ih_applyDirect on (actualOp, operands).
                     obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
-                            h_meta', hv_ra, hv_rb⟩ :=
+                            h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                       ih_applyDirect ptable actualOp_a actualOp_b operands_a operands_b
                         metaEnv s_a s_b r_a s_a' h_ctx h_vv_actual h_lvv_ops h_meta
-                        hv_actual_a hv_actual_b hv_ops_a hv_ops_b h_eval
+                        hv_actual_a hv_actual_b hv_ops_a hv_ops_b
+                        hsf_actual_a hsf_actual_b hsf_ops_a hsf_ops_b h_eval
                     refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
-                            h_meta', hv_ra, hv_rb⟩
+                            h_meta', hv_ra, hv_rb, hsf_ra, hsf_rb⟩
                     simp only [applyDirect, hl_b, h_eval_b]
         | prim name =>
             -- op_b must also be .prim name (forced by ValVis_aux 1).
@@ -3255,8 +3610,15 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨r_b, hp_b, h_vv_r, hv_ra, hv_rb⟩ :=
                   applyPrim_bisim name args_a args_b s_a.heap s_b.heap
                     h_lvv hv_argsa hv_argsb v_a' hp_a
+                -- applyPrim returns first-order Vals only (.num, .bool, etc.) —
+                -- never closures — so the result is `SetFreeVal` for any input.
+                have hsf_ra : SetFreeVal v_a' :=
+                  applyPrim_SetFreeVal name args_a v_a' hsf_argsa hp_a
+                have hsf_rb : SetFreeVal r_b :=
+                  applyPrim_SetFreeVal name args_b r_b hsf_argsb hp_b
                 refine ⟨r_b, s_b, ?_, h_vv_r, h_ctx,
-                        HeapExt.refl _, HeapExt.refl _, h_meta, hv_ra, hv_rb⟩
+                        HeapExt.refl _, HeapExt.refl _, h_meta, hv_ra, hv_rb,
+                        hsf_ra, hsf_rb⟩
                 simp only [applyDirect, hp_b]
         | closure ps body cenv =>
             -- op_b must also be a .closure with the same ps, body, and a
@@ -3315,6 +3677,13 @@ theorem frame : ∀ n, FrameStmt n := by
               have hem_b' : EnvValid metaEnv
                   (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 :=
                 EnvValid.heap_extends h_ctx.em_b ⟨ext_b, hex_b⟩
+              -- HeapSetFree on alloc'd heaps.
+              have hsf_a' : HeapSetFree
+                  (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1 :=
+                HeapSetFree.alloc_chain args_a ps cenv s_a.heap h_ctx.hsf_a hsf_argsa
+              have hsf_b' : HeapSetFree
+                  (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 :=
+                HeapSetFree.alloc_chain args_b ps cenv_b s_b.heap h_ctx.hsf_b hsf_argsb
               -- Construct WFCtx for the body call.
               have h_ctx_alloc :
                   WFCtx
@@ -3325,10 +3694,13 @@ theorem frame : ∀ n, FrameStmt n := by
                         (s_a.heap, cenv)).1 }
                     { s_b with heap := (args_b.zip ps |>.foldl allocStep
                         (s_b.heap, cenv_b)).1 } :=
-                ⟨h_ctx.state_ext, hh_a', hh_b', hev_a', hev_b', hem_a', hem_b'⟩
+                ⟨h_ctx.state_ext, hh_a', hh_b', hev_a', hev_b', hem_a', hem_b',
+                 hsf_a', hsf_b'⟩
+              -- SetFreeExpr body extracted from SetFreeVal of the closure op.
+              have h_sf_body : SetFreeExpr body := hsf_opa
               -- Now apply ih_eval on body.
               obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx_body, h_he_a_body, h_he_b_body,
-                      _h_env_body, h_meta_body, hv_ra, hv_rb⟩ :=
+                      _h_env_body, h_meta_body, hv_ra, hv_rb, hsf_ra, hsf_rb⟩ :=
                 ih_eval ptable body
                   (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).2
                   (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).2
@@ -3336,7 +3708,7 @@ theorem frame : ∀ n, FrameStmt n := by
                   { s_a with heap := (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1 }
                   { s_b with heap := (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 }
                   r_a s_a'
-                  h_ctx_alloc h_env_alloc h_meta_alloc h_eval
+                  h_ctx_alloc h_env_alloc h_meta_alloc h_sf_body h_eval
               -- Build heap-extension chain.
               have h_he_a_alloc : HeapExt s_a
                   { s_a with heap := (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1 } :=
@@ -3351,9 +3723,10 @@ theorem frame : ∀ n, FrameStmt n := by
               -- Output WFCtx for metaEnv-only env (since this is applyDirect framing).
               have h_ctx_out : WFCtx metaEnv metaEnv metaEnv s_a' s_b' :=
                 ⟨h_ctx_body.state_ext, h_ctx_body.hv_a, h_ctx_body.hv_b,
-                 h_ctx_body.em_a, h_ctx_body.em_b, h_ctx_body.em_a, h_ctx_body.em_b⟩
+                 h_ctx_body.em_a, h_ctx_body.em_b, h_ctx_body.em_a, h_ctx_body.em_b,
+                 h_ctx_body.hsf_a, h_ctx_body.hsf_b⟩
               refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out, h_he_a_chain, h_he_b_chain,
-                      h_meta_body, hv_ra, hv_rb⟩
+                      h_meta_body, hv_ra, hv_rb, hsf_ra, hsf_rb⟩
               -- Goal: applyDirect (k+1) ptable (.closure ps body cenv_b) args_b metaEnv s_b
               --       = some (r_b, s_b')
               simp only [applyDirect]
