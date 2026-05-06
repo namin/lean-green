@@ -245,12 +245,12 @@ lake exe runner 10       # 10 rounds
 
 ## References
 
-- `DESIGN.md` — full design, including the verification structure,
+- [`DESIGN.md`](DESIGN.md) — full design, including the verification structure,
   the proof chain, refinements that emerged from the build, and
   remaining risks.
-- `docs/Kumar_2016_thesis.pdf` — primary inspiration for the
+- [`docs/Kumar_2016_thesis.pdf`](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-879.html) — primary inspiration for the
   bisimulation infrastructure (Chapter 3, data refinement for
   closures, fuel-based divergence preservation).
-- `black/black.scm` — Asai/Matsuoka/Yonezawa 1996 reference
+- [`black/black.scm`](https://github.com/readevalprintlove/black/blob/master/black.scm) — Asai/Matsuoka/Yonezawa 1996 reference
   implementation that this Lean 4 development reimplements the core
   reflective architecture of.
