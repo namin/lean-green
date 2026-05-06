@@ -258,25 +258,63 @@ theorem multnExact_CE_nonnum_case
     (h_orig : OrigBoundIn s.heap .builtinBaseApply new)
     (h_numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn s.heap cenv)
     (h_heap : HeapValid s.heap)
-    (h_meta_valid : EnvValid metaEnv s.heap) :
+    (h_meta_valid : EnvValid metaEnv s.heap)
+    (hv_cenv : ∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap)
+    (hv_op : ValValid op s.heap)
+    (hv_operands : ListValValid operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
-  -- Structural extraction.
+  -- Structural extraction: new is the multn-shaped closure.
   have shape : MultnExactShape new :=
     multnExact_sound_for_shape .builtinBaseApply new h_admit
-  obtain ⟨_, _, h_eq⟩ := shape
+  obtain ⟨t, cenv, h_eq⟩ := shape
   subst h_eq
-  -- Outline of the remaining trace:
-  --   1. Pick fuel' = fuel + 8.
-  --   2. callAsBaseApply on closure → applyDirect (fuel+8) on closure
-  --   3. applyDirect on closure: alloc op/args, eval body
-  --   4. eval .ifte → eval cond
-  --   5. cond = (primApp num? op) → .bool false (using applyPrim_numq_nonnum + h_op)
-  --   6. take else: (primApp orig op args)
-  --   7. lookup orig → builtinBaseApply (h_orig)
-  --   8. applyDirect builtinBaseApply [op, listToVal operands] → applyDirect op operands
-  --   9. From h_old + frame: result is ValVis-related.
+  -- Extract `orig`'s index from h_orig.
+  obtain ⟨ps_o, body_o, cenv_o, idx_o, h_eq_o, h_lookup_o, h_heap_o⟩ := h_orig
+  injection h_eq_o with hps_eq hbody_eq hcenv_eq
+  subst hps_eq; subst hbody_eq; subst hcenv_eq
+  -- Extract `num?`'s index from h_numq.
+  obtain ⟨_, _, _, hnew_eq, hnumq⟩ := h_numq
+  injection hnew_eq with _ _ hcenv_eq2
+  subst hcenv_eq2
+  obtain ⟨idx_n, h_lookup_n, h_heap_n⟩ := hnumq
+  -- callAsBaseApply on `.builtinBaseApply` reduces to applyDirect.
+  have h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s') := by
+    unfold callAsBaseApply at h_old
+    exact h_old
+  -- Self-bisim hypotheses for op and operands (for frame).
+  have hev_cenv : EnvValid cenv s.heap := hv_cenv _ _ _ rfl
+  -- The inner frame call: relate h_app at state s to a b-side call at the
+  -- alloc'd state s_alloc with the same op and operands. This requires:
+  --   - WFCtx metaEnv metaEnv metaEnv s s_alloc
+  --   - ValVis op op (self-extend), ListValVis operands operands (pointwise self-extend)
+  --   - ValValid op, ListValValid operands on both heaps
+  --   - EnvVis metaEnv metaEnv (self-extend)
+  -- These are all derivable from hv_op, hv_operands, h_meta_valid, h_heap,
+  -- via `ValVis_aux_self_extend`, `EnvVis_aux_self_of_valid'`, and the
+  -- `ValValid.heap_extends` / `ListValValid.heap_extends` lifts.
+  --
+  -- Once frame is applied, we have a b-side `applyDirect fuel op operands`
+  -- at the alloc'd state. To complete the proof, we manually unfold:
+  --
+  --   callAsBaseApply (fuel + 4) ptable new op operands metaEnv s
+  --     = applyDirect (fuel + 4) ptable new [op, listToVal operands] metaEnv s
+  --     -- closure case: alloc op, listToVal operands; eval body in env_alloc
+  --     = eval (fuel + 3) body env_alloc metaEnv s_alloc
+  --     -- body = .ifte (primApp num? op) t (primApp orig op args)
+  --     -- cond evaluates to .bool false (using applyPrim_numq_nonnum + h_op)
+  --     = eval (fuel + 2) (else branch) env_alloc metaEnv s_alloc
+  --     -- else = primApp orig op args; orig → .builtinBaseApply via h_lookup_o
+  --     = applyDirect (fuel + 1) .builtinBaseApply [op, listToVal operands] metaEnv s_alloc
+  --     -- builtinBaseApply: valToList listToVal operands = some operands
+  --     = applyDirect fuel op operands metaEnv s_alloc
+  --     -- frame.applyDirect relates this to h_app, giving (r_b, s_b') with ValVis r r_b
+  --
+  -- Each step in this trace is a direct unfolding using `eval`'s and `applyDirect`'s
+  -- definitions. The full proof is mechanical but ~200 LOC of careful navigation
+  -- through Lean's match-reduction (which doesn't always reduce automatically when
+  -- expressions are partially abstract). Stage-3 work item.
   sorry
 
 /-- **Full conditional CE soundness for `multnExactPolicy`** (first
@@ -294,7 +332,10 @@ theorem multnExact_soundForCE_first_install
     (h_orig : OrigBoundIn s.heap .builtinBaseApply new)
     (h_numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn s.heap cenv)
     (h_heap : HeapValid s.heap)
-    (h_meta_valid : EnvValid metaEnv s.heap) :
+    (h_meta_valid : EnvValid metaEnv s.heap)
+    (hv_cenv : ∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap)
+    (hv_op : ValValid op s.heap)
+    (hv_operands : ListValValid operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
@@ -307,6 +348,7 @@ theorem multnExact_soundForCE_first_install
       exact hn ⟨n, hop_num⟩
     exact multnExact_CE_nonnum_case new h_admit fuel ptable op h_op
       operands metaEnv s r s' h_old h_orig h_numq h_heap h_meta_valid
+      hv_cenv hv_op hv_operands
 
 /-! ## The verified policy table -/
 

@@ -57,6 +57,9 @@ theorem multnExact_soundForCE_first_install :
     NumQBoundIn s.heap (cenvOf new) →
     HeapValid s.heap →
     EnvValid metaEnv s.heap →
+    (∀ ps body cenv', new = .closure ps body cenv' → EnvValid cenv' s.heap) →
+    ValValid op s.heap →
+    ListValValid operands s.heap →
     callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s') →
     ∃ fuel' s'' r',
@@ -66,8 +69,8 @@ theorem multnExact_soundForCE_first_install :
 
 Here `ValVis` is the value-equivalence relation defined below
 (values structurally equal up to closure-environment refinement).
-The four install-protocol hypotheses encode what the runner
-guarantees when it admits a modification via
+The install-protocol hypotheses encode what the runner guarantees
+when it admits a modification via
 `(em (let orig base-apply (set! base-apply <PROP>)))` from a clean
 state:
 
@@ -78,10 +81,19 @@ state:
 - **`HeapValid`** — every heap cell holds a `ValValid` value
 - **`EnvValid metaEnv`** — meta-env's bindings point to valid heap
   cells
+- **`EnvValid (cenvOf new)`** — the closure's captured env is valid
+  in the heap (needed for the closure-call alloc to produce a valid
+  extended env)
+- **`ValValid op`, `ListValValid operands`** — the operator and
+  operands the runner passes are valid in the heap (needed for
+  `frame.applyDirect` to apply at the inner recursive call)
 
-The first two are install-time facts; the latter two are runtime
-invariants the runner maintains across any sequence of admitted
-modifications. Each is a 1-3 line predicate.
+The first two are install-time facts. The remaining ones are
+runtime invariants the runner maintains across any sequence of
+admitted modifications: heap and env validity are inductive on
+the runtime, and the `op`/`operands` validity follows from the
+fact that base-level evaluations on a `HeapValid` heap produce
+`ValValid` values. Each is a 1-3 line predicate.
 
 **Infrastructure.** The framing theorem that makes the operational
 proof possible:
@@ -92,17 +104,30 @@ theorem applyDirect_frame :
   ValVis op_a op_b s_a.heap s_b.heap →
   ListValVis args_a args_b s_a.heap s_b.heap →
   EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+  ValValid op_a s_a.heap → ValValid op_b s_b.heap →
+  ListValValid args_a s_a.heap → ListValValid args_b s_b.heap →
   applyDirect fuel ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
   ∃ r_b s_b',
     applyDirect fuel ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
     ValVis r_a r_b s_a'.heap s_b'.heap ∧
     WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
     HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
-    EnvVis metaEnv metaEnv s_a'.heap s_b'.heap
+    EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
+    ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap
 ```
 
 Plus parallel statements for `eval`, `evalList`, `applyVia`. Proved
-mutually by induction on fuel.
+mutually by induction on fuel. The `eval`/`evalList` branches don't
+require `ValValid` on inputs — they produce `ValValid`/`ListValValid`
+outputs from heap and env validity carried in `WFCtx`. The
+`applyVia`/`applyDirect` branches require `ValValid op` and
+`ListValValid args` as inputs because the closure case allocates
+args (which requires `EnvValid` on the closure's cenv, which
+unfolds from `ValValid` on the closure value).
+
+Status: complete except for the `.quote` and `.set` cases in `eval`.
+Both are architectural items rather than missing proof work — see
+*Refinements* below.
 
 `WFCtx`, `HeapExt`, and `ListValVis` are bundling abstractions that
 emerged during the build — see the *Refinements* section below.
@@ -326,19 +351,23 @@ too low, mostly because the bisimulation infrastructure required
 several supporting abstractions (`WFCtx`, `HeapExt`, `ListValVis`,
 `ValValid` invariant) that weren't in the first sketch:
 
-- Substrate (`Black.lean`): ~280 LOC (interpreter, primitives,
-  initState, evalProgram). Standard.
-- `Bisim.lean`: ~1500-2000 LOC. Includes the depth-indexed
-  `ValVis_aux` / `EnvVis_aux` mutual definition, the universal-depth
-  versions, `StateExt` and `HeapExt` (both needed — see
-  *Refinements* below), validity machinery (`ValValid`, `HeapValid`,
+- Substrate (`Black.lean`): ~390 LOC (interpreter, primitives,
+  initState, evalProgram). Standard, plus the per-prim helper split
+  for `applyPrim` (see *Refinements*).
+- `Bisim.lean`: ~3300 LOC. Includes the depth-indexed `ValVis_aux` /
+  `EnvVis_aux` mutual definition, the universal-depth versions,
+  `StateExt` (just policy equality — see *Refinements*) and
+  `HeapExt`, validity machinery (`ValValid`, `HeapValid`,
   `EnvValid`), `WFCtx` invariant bundle, two-sided heap-extension
   lemmas (`ValVis_aux_extends`, `EnvVis_aux_extends` mutually
   proved), `ListValVis`, characterization lemmas
-  (`ValVis_bool_false_iff`), and the `frame` mutual theorem itself.
-  Roughly half the LOC is the framing proof; the other half is
-  supporting abstractions and lemmas.
-- `Policies.lean`: ~270 LOC (BlackPolicy, library, structural
+  (`ValVis_bool_false_iff`), `applyPrim_bisim` (~600 LOC of per-prim
+  case work), `mulConsList_bisim`, `valToList_bisim`,
+  `alloc_chain_bisim` (the foldl-induction for closure-call args),
+  `EnvVis_cons`, `closure_ValVis_imp_cenv_EnvVis`, and the `frame`
+  mutual theorem itself. The framing proof is the bulk; the
+  per-prim and foldl helpers are the larger-than-expected pieces.
+- `Policies.lean`: ~330 LOC (BlackPolicy, library, structural
   soundness theorems via `split at h`, install-protocol predicates,
   conditional CE soundness for multn).
 - LLM cascade glue (`Bedrock.lean` / `Elab.lean` / `Runner.lean` /
@@ -346,10 +375,13 @@ several supporting abstractions (`WFCtx`, `HeapExt`, `ListValVis`,
   spliced-Lean-source elaboration + one-round orchestrator. (Ports
   cleanly from the lean-grey precursor.)
 
-Total: ~2700-3200 LOC. Roughly 8-12 focused sessions to assemble,
-build, and prove. The framing theorem alone is the bulk: each of
-the four mutual functions has many cases, each requiring 30-150 LOC
-following established proof templates.
+Total: ~4500 LOC at the time of writing, with `.quote`, `.set`, and
+the inner trace of `multnExact_CE_nonnum_case` still open. The
+framing theorem alone is the bulk: each of the four mutual
+functions has many cases, each requiring 30-150 LOC following
+established proof templates. The `applyPrim_bisim` and
+`alloc_chain_bisim` helpers were ~750 LOC of unanticipated
+infrastructure on top of the framing proper.
 
 ## Demo
 
@@ -396,13 +428,33 @@ by an approximation depth).
 
 ### `HeapExt` vs `StateExt`
 
-`StateExt s_a s_b` (cross-side, with same-policy constraint) is the
-right hypothesis between sides — set!-policy interactions need both
-sides to use the same policy. But `installPolicy` *changes* the
-policy, so same-side state evolution s_a → s_a' breaks `StateExt`.
-We need a separate `HeapExt s_a s_a' := ∃ extras, s_a'.heap = s_a.heap ++ extras`
-(heap-only extension, no policy constraint) for the framing's
-same-side conclusions. Both relations live in `Bisim.lean`.
+The cross-side state relation between `s_a` and `s_b` is just
+**same policy**: `StateExt s_a s_b := s_a.policy = s_b.policy`.
+The bilateral same-side heap-monotonicity is captured separately
+by `HeapExt s_a s_a' := ∃ extras, s_a'.heap = s_a.heap ++ extras`,
+and the cross-side heap relation is implicit through `ValVis` /
+`EnvVis` on the relevant values.
+
+Earlier drafts had `StateExt` carry a heap-prefix relation
+`∃ extras, s_b.heap = s_a.heap ++ extras` in addition to policy
+equality. That part is **provably wrong** as a cross-side *output*
+invariant: the closure-call alloc in `applyDirect` allocates `args_a`
+on the a-side and the (only `ListValVis`-related) `args_b` on the
+b-side, producing `s_a.heap ++ args_a` and `s_b.heap ++ args_b =
+s_a.heap ++ extras ++ args_b`. For the result to be in a prefix
+relation `s_b'.heap = s_a'.heap ++ extras'`, we'd need
+`args_a ++ extras' = extras ++ args_b`, which forces `args_a = args_b`
+when `extras = []` — too strong, since `ListValVis` doesn't imply
+list equality. The same issue arises in `.letE`, `.app`, `.primApp`.
+
+The bisimulation arguments (`ValVis_extends`, `EnvVis_extends`) all
+take *two* extension lists (`ext_a` and `ext_b`) and don't require
+them to be related. So the heap-prefix part of `StateExt` was never
+load-bearing for framing; it's just policy equality that matters.
+Same-policy is preserved by allocation (alloc only changes heap)
+and by `installPolicy` symmetrically (both sides install the same
+new policy, since framing's `EnvVis metaEnv metaEnv` and the same
+`ptable` mean the policy lookup gives matching results).
 
 ### `WFCtx` invariant bundle
 
@@ -416,7 +468,7 @@ hypotheses through every inner case is unworkable.
 
 ```lean
 structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
-  state_ext : StateExt s_a s_b
+  state_ext : StateExt s_a s_b   -- = (s_a.policy = s_b.policy)
   hv_a, hv_b   : HeapValid s_{a,b}.heap
   ev_a, ev_b   : EnvValid env_{a,b} s_{a,b}.heap
   em_a, em_b   : EnvValid metaEnv s_{a,b}.heap
@@ -425,15 +477,29 @@ structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
 The framing theorem takes `WFCtx` as input and produces `WFCtx` for
 the result state.
 
-### `ValValid` outputs in framing
+### `ValValid` outputs and inputs in framing
 
-To chain framing across multi-step recursive cases (notably `.app`'s
-3-step trace: eval f → evalList args → applyVia), the framing
-conclusion needs to produce `ValValid r_a s_a'.heap` and
+Two related strengthenings, both needed:
+
+**Outputs** — to chain framing across multi-step recursive cases
+(notably `.app`'s 3-step trace: `eval f → evalList args → applyVia`),
+the framing conclusion needs to produce `ValValid r_a s_a'.heap` and
 `ValValid r_b s_b'.heap` so the result values can be lifted via
-`ValVis_extends` into subsequently-extended heaps. This wasn't
-anticipated in the initial sketch; framing's conclusion needs
-strengthening to produce these.
+`ValVis_extends` into subsequently-extended heaps. The `eval` and
+`evalList` branches produce these from `WFCtx`'s heap and env
+validity.
+
+**Inputs** — the `applyVia` and `applyDirect` branches *take*
+`ValValid op_a/op_b` and `ListValValid args_a/args_b` as
+hypotheses. The closure case of `applyDirect` needs them to know
+the closure's cenv is `EnvValid` (which is what `ValValid` on a
+closure unfolds to) before allocating args — without this, we
+can't construct a `WFCtx` for the closure-body call.
+
+The `.app` case of framing satisfies this requirement when calling
+`ih_applyVia`: `eval f` produces `ValValid fv_a/fv_b`,
+`evalList args` produces `ListValValid avs_a/avs_b`, both lift
+across the inner heap extension via `heap_extends`.
 
 ### Pointwise `ListValVis`
 
@@ -451,6 +517,40 @@ def ListValVis : List Val → List Val → Heap → Heap → Prop
 `evalList`'s framing conclusion produces `ListValVis rs_a rs_b`;
 `applyVia` / `applyDirect` framing takes it as a hypothesis.
 
+### `applyPrim_bisim` and the source-level `applyPrim` refactor
+
+Framing's `applyDirect.prim` case needs `applyPrim_bisim`: if
+`applyPrim name args_a = some r_a` and `args_a`/`args_b` are
+`ListValVis`-related, then `applyPrim name args_b = some r_b` for
+some `r_b` with `ValVis r_a r_b`. The proof is per-prim case
+analysis (`+`, `-`, `*`, `=`, `mul-list`, predicates, `cons`, `car`,
+`cdr`).
+
+The original `applyPrim` definition in `Black.lean` was a single
+deeply-nested `match name, args` block covering all 13 prims. Lean's
+match compiler **fails to generate equational lemmas** for that
+form when `name` is abstract — `simp [applyPrim] at h` doesn't
+reduce, blocking the per-prim case analysis. The refactor splits
+each prim into its own helper (`applyPrim_plus`, `applyPrim_numQ`,
+…) dispatched by `if-else` on `name`. Behavior is identical;
+Lean now generates equational lemmas for each helper. This is a
+pure source-level change driven by Lean infrastructure friction,
+not a design change.
+
+### `alloc_chain_bisim` for closure-call args
+
+Framing's `applyDirect.closure` case allocates `args_a.zip ps` on
+one side and `args_b.zip ps` on the other via `foldl`, building up
+extended cenvs and heaps. The invariant — the resulting envs and
+heaps are `WFCtx`-compatible and `EnvVis`-related — is established
+by induction on `args_a` (with `xs_b` and `ps` pinned to matching
+length), threading through the per-arg `ValVis_extends`,
+`EnvVis_cons`, and validity-extension lemmas. ~150 LOC.
+
+This wasn't anticipated as a separate concern in earlier drafts;
+the foldl structure makes it a substantive piece of infrastructure
+on its own.
+
 ### `.quote` and `ClosedVal`
 
 The `.quote v` case requires `ValVis v v` across two different
@@ -458,16 +558,44 @@ heaps. For atomic Vals (numbers, booleans, etc.), this is trivial;
 for `.cons` and `.closure`, it requires validity hypotheses. The
 honest fix is a `ClosedVal v` predicate restricting quoted Vals to
 those without closure references, or assuming `ValValid v` on both
-heaps. Stage 3 work item.
+heaps. Stage 3 work item — this case currently remains a `sorry`
+in the framing theorem.
+
+### `.set` and policy bisimulation respect
+
+The `.set` case in framing involves the meta-mutation policy gate:
+when a `set!` targets a meta-env binding, `s.policy oldVal newVal`
+decides whether to admit the mutation. Under bisimulation,
+`oldVal_a` / `oldVal_b` and `newVal_a` / `newVal_b` are only
+`ValVis`-related, not equal — and `s.policy` is a black-box
+`Bool`-valued function, so it can return different verdicts on
+bisim-related-but-unequal inputs.
+
+For framing to go through on `.set`, we'd need to add a
+"policy is bisimulation-respecting" hypothesis to `WFCtx`:
+`∀ x_a x_b y_a y_b, ValVis x_a x_b → ValVis y_a y_b → s.policy x_a y_a = s.policy x_b y_b`.
+This is satisfied by the policies in the verified table (each
+matches on syntactic shape that's preserved by `ValVis`), but
+isn't automatic for arbitrary `BlackPolicy`. Stage-3 work item;
+this case currently remains a `sorry`.
 
 ## Risks
 
 - **Sub-cases in framing are tedious.** Each function in the mutual
   block has many cases (`eval` has 13). The pattern is uniform but
-  verbose, similar to fuel monotonicity. The proof template
-  (`rw [F.eq_def]; simp only at h ⊢; cases hr : F n ... | none =>
-  ... | some pr => ...; ih_F ...`) is established and works; the
-  remaining work is mostly typing.
+  verbose. The framing theorem is now closed for all cases except
+  `.quote` and `.set` (both architectural items, see *Refinements*).
+  In retrospect the closure case of `applyDirect` was harder than
+  this risk anticipated — it needs `alloc_chain_bisim`, an
+  inductive proof over `args.zip ps` that wasn't obvious from the
+  initial sketch.
+
+- **`match`-equational-lemma generation is brittle.** Lean 4's match
+  compiler doesn't always generate equational lemmas for deeply-
+  nested patterns. The original `applyPrim` definition (one big
+  `match name, args`) hit this and required a source-level refactor
+  to per-prim helpers. Future cases that need to reason about
+  large abstract `match` expressions may need similar refactoring.
 
 - **Closure's body-equality requirement might be too strong.** The
   framing requires `body_a = body_b` for closures to relate. If the
@@ -475,8 +603,17 @@ heaps. Stage 3 work item.
   evaluations, their bodies are equal (we're not compiling), so this
   should hold automatically.
 
-These are sequencing risks, not blocking risks — none require new
-conceptual work beyond what the design lays out.
+- **`.set` framing requires policy-bisim respect.** A genuinely
+  open architectural question — `WFCtx` doesn't currently include
+  any constraint on `s.policy`'s behavior under bisim-related
+  inputs, so the `.set` case of framing can't go through. The
+  policies in `verifiedTable` actually do satisfy the needed
+  property (they pattern-match on syntactic shape), but encoding
+  this in `WFCtx` is a new design decision.
+
+The first three are sequencing or implementation risks. The last
+is conceptual and remains open — see the `.set` subsection in
+*Refinements*.
 
 ## References
 

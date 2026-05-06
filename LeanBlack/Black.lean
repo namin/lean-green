@@ -129,26 +129,83 @@ def mulConsList : Val → Option Int
   | .cons (.num n) rest => (mulConsList rest).map (n * ·)
   | _                   => none
 
-def applyPrim : String → List Val → Option Val
-  | "+",        [.num a, .num b]   => some (.num (a + b))
-  | "-",        [.num a, .num b]   => some (.num (a - b))
-  | "*",        [.num a, .num b]   => some (.num (a * b))
-  | "mul-list", [v]                => (mulConsList v).map (.num ·)
-  | "=",        [.num a, .num b]   => some (.bool (a == b))
-  | "num?",     [.num _]           => some (.bool true)
-  | "num?",     [_]                => some (.bool false)
-  | "bool?",    [.bool _]          => some (.bool true)
-  | "bool?",    [_]                => some (.bool false)
-  | "closure?", [.closure _ _ _]   => some (.bool true)
-  | "closure?", [_]                => some (.bool false)
-  | "prim?",    [.prim _]          => some (.bool true)
-  | "prim?",    [_]                => some (.bool false)
-  | "cons",     [a, b]             => some (.cons a b)
-  | "car",      [.cons a _]        => some a
-  | "cdr",      [.cons _ b]        => some b
-  | "null?",    [.nilV]            => some (.bool true)
-  | "null?",    [_]                => some (.bool false)
-  | _,          _                  => none
+/-- Each primitive's behavior is split into its own helper. The top-level
+    `applyPrim` then dispatches on `name`. This shape lets Lean's match
+    compiler generate equational lemmas for each helper independently
+    (rather than failing on one giant nested match), which is required
+    for clean per-prim case analysis in proofs. -/
+def applyPrim_plus : List Val → Option Val
+  | [.num a, .num b] => some (.num (a + b))
+  | _                => none
+
+def applyPrim_minus : List Val → Option Val
+  | [.num a, .num b] => some (.num (a - b))
+  | _                => none
+
+def applyPrim_times : List Val → Option Val
+  | [.num a, .num b] => some (.num (a * b))
+  | _                => none
+
+def applyPrim_mulList : List Val → Option Val
+  | [v] => (mulConsList v).map (.num ·)
+  | _   => none
+
+def applyPrim_eq : List Val → Option Val
+  | [.num a, .num b] => some (.bool (a == b))
+  | _                => none
+
+def applyPrim_numQ : List Val → Option Val
+  | [.num _] => some (.bool true)
+  | [_]      => some (.bool false)
+  | _        => none
+
+def applyPrim_boolQ : List Val → Option Val
+  | [.bool _] => some (.bool true)
+  | [_]       => some (.bool false)
+  | _         => none
+
+def applyPrim_closureQ : List Val → Option Val
+  | [.closure _ _ _] => some (.bool true)
+  | [_]              => some (.bool false)
+  | _                => none
+
+def applyPrim_primQ : List Val → Option Val
+  | [.prim _] => some (.bool true)
+  | [_]       => some (.bool false)
+  | _         => none
+
+def applyPrim_cons : List Val → Option Val
+  | [a, b] => some (.cons a b)
+  | _      => none
+
+def applyPrim_car : List Val → Option Val
+  | [.cons a _] => some a
+  | _           => none
+
+def applyPrim_cdr : List Val → Option Val
+  | [.cons _ b] => some b
+  | _           => none
+
+def applyPrim_nullQ : List Val → Option Val
+  | [.nilV] => some (.bool true)
+  | [_]     => some (.bool false)
+  | _       => none
+
+def applyPrim (name : String) (args : List Val) : Option Val :=
+  if name = "+" then applyPrim_plus args
+  else if name = "-" then applyPrim_minus args
+  else if name = "*" then applyPrim_times args
+  else if name = "mul-list" then applyPrim_mulList args
+  else if name = "=" then applyPrim_eq args
+  else if name = "num?" then applyPrim_numQ args
+  else if name = "bool?" then applyPrim_boolQ args
+  else if name = "closure?" then applyPrim_closureQ args
+  else if name = "prim?" then applyPrim_primQ args
+  else if name = "cons" then applyPrim_cons args
+  else if name = "car" then applyPrim_car args
+  else if name = "cdr" then applyPrim_cdr args
+  else if name = "null?" then applyPrim_nullQ args
+  else none
 
 mutual
 def eval (fuel : Nat) (ptable : PolicyTable) (exp : Expr)
