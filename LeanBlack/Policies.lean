@@ -235,6 +235,18 @@ theorem multnExact_CE_num_case_vacuous
     dispatches to `applyDirect op operands`, which by `frame`
     (defined in `Bisim.lean`) gives a `ValVis`-related result.
 
+    Required hypotheses surfaced during proof design:
+    - `OrigBoundIn` — closure cenv binds `"orig"` to a heap cell
+      holding `.builtinBaseApply`.
+    - `NumQBoundIn` — closure cenv binds `"num?"` to `.prim "num?"`,
+      so the body's cond evaluation can resolve.
+    - `HeapValid s.heap` — for using `EnvVis_aux_extends` through the
+      framing chain.
+    - `EnvValid metaEnv s.heap` — for the metaEnv preservation step.
+
+    The runner's install protocol guarantees all four when admitting
+    a multn modification from the standard initial state.
+
     Stage-3 work item: depends on the recursive cases of the `frame`
     theorem being closed in `Bisim.lean`. -/
 theorem multnExact_CE_nonnum_case
@@ -243,7 +255,10 @@ theorem multnExact_CE_nonnum_case
     (operands : List Val) (metaEnv : Env) (s : RunState) (r : Val) (s' : RunState)
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
-    (h_orig : OrigBoundIn s.heap .builtinBaseApply new) :
+    (h_orig : OrigBoundIn s.heap .builtinBaseApply new)
+    (h_numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn s.heap cenv)
+    (h_heap : HeapValid s.heap)
+    (h_meta_valid : EnvValid metaEnv s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
@@ -266,7 +281,9 @@ theorem multnExact_CE_nonnum_case
 
 /-- **Full conditional CE soundness for `multnExactPolicy`** (first
     install). Combines the numerical and non-numerical cases by case
-    analysis on `op`. -/
+    analysis on `op`. The non-numerical case carries through the
+    install-protocol hypotheses (`NumQBoundIn`, `HeapValid`,
+    `EnvValid metaEnv`). -/
 theorem multnExact_soundForCE_first_install
     (new : Val) (h_admit : multnExactPolicy .builtinBaseApply new = true)
     (fuel : Nat) (ptable : PolicyTable) (op : Val)
@@ -274,7 +291,10 @@ theorem multnExact_soundForCE_first_install
     (r : Val) (s' : RunState)
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
-    (h_orig : OrigBoundIn s.heap .builtinBaseApply new) :
+    (h_orig : OrigBoundIn s.heap .builtinBaseApply new)
+    (h_numq : ∃ ps body cenv, new = .closure ps body cenv ∧ NumQBoundIn s.heap cenv)
+    (h_heap : HeapValid s.heap)
+    (h_meta_valid : EnvValid metaEnv s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
@@ -286,7 +306,7 @@ theorem multnExact_soundForCE_first_install
       intro n hop_num
       exact hn ⟨n, hop_num⟩
     exact multnExact_CE_nonnum_case new h_admit fuel ptable op h_op
-      operands metaEnv s r s' h_old h_orig
+      operands metaEnv s r s' h_old h_orig h_numq h_heap h_meta_valid
 
 /-! ## The verified policy table -/
 
