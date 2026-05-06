@@ -5,7 +5,7 @@ LLM-driven proposer/gate cascade and the value-bisimulation
 infrastructure needed to prove conservative-extension soundness for
 governed reflective modifications.
 
-See `DESIGN.md` for the full design.
+See [`DESIGN.md`](DESIGN.md) for the full design.
 
 ## Three load-bearing properties
 
