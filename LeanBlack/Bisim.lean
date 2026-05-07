@@ -443,6 +443,16 @@ theorem Heap.update_get_neq : ∀ (h : Heap) (idx : Nat) (v : Val) (i : Nat),
       have : i ≠ n := fun h_eq => hne (congrArg Nat.succ h_eq)
       exact Heap.update_get_neq t n v i this
 
+/-- Out-of-bounds update is a no-op. -/
+theorem Heap.update_oob : ∀ (h : Heap) (idx : Nat) (v : Val),
+    h.length ≤ idx → Heap.update h idx v = h
+  | [],       _,     _, _    => rfl
+  | _ :: _,   0,     _, h_le => by simp at h_le
+  | _ :: t,   n + 1, v, h_le => by
+      simp only [Heap.update]
+      simp only [List.length_cons] at h_le
+      exact congrArg _ (Heap.update_oob t n v (Nat.le_of_succ_le_succ h_le))
+
 /-! ## Reflexivity at every depth
 
     A value is bisimilar to itself in any heap, provided env-validity
@@ -5188,6 +5198,56 @@ theorem shift_heap_update (cutoff : Nat) (padding h : Heap) (idx : Nat) (v : Val
           rw [← h_shifted_eq, h_eq_idx]
         rw [Heap.update_get_neq _ _ _ _ h_orig_ne_idx]
 
+/-- General `shift_heap_update`: works regardless of bounds. If `idx`
+    is out of bounds on side A, both updates are no-ops. -/
+theorem shift_heap_update_general (cutoff : Nat) (padding h : Heap) (idx : Nat) (v : Val)
+    (h_cutoff : cutoff ≤ h.length) :
+    shift_heap cutoff padding (h.update idx v) =
+      (shift_heap cutoff padding h).update
+        (shift_idx cutoff padding.length idx)
+        (shift_val cutoff padding.length v) := by
+  by_cases h_lt : idx < h.length
+  · exact shift_heap_update cutoff padding h idx v h_cutoff h_lt
+  · -- Out-of-bounds: both updates are no-ops.
+    have h_oob_a : h.length ≤ idx := Nat.le_of_not_lt h_lt
+    rw [Heap.update_oob h idx v h_oob_a]
+    -- Side B: shift_idx idx ≥ cutoff (since idx ≥ cutoff because idx ≥ h.length ≥ cutoff).
+    have h_idx_ge_cutoff : cutoff ≤ idx := Nat.le_trans h_cutoff h_oob_a
+    have h_shift_idx : shift_idx cutoff padding.length idx = idx + padding.length := by
+      unfold shift_idx
+      rw [if_neg (by omega : ¬ idx < cutoff)]
+    have h_shift_idx_oob :
+        (shift_heap cutoff padding h).length
+          ≤ shift_idx cutoff padding.length idx := by
+      rw [shift_heap_length, h_shift_idx]; omega
+    rw [Heap.update_oob _ _ _ h_shift_idx_oob]
+
+/-! ## Policy shift-respecting predicate -/
+
+/-- A policy is **shift-respecting** for a fixed `cutoff`/`padding` if its
+    verdict is invariant under coordinated shifting of all of its inputs.
+    This is the analog of `PolicyRespectsBisim` for shift-renaming
+    (which differs from a length-preserving bisim). -/
+def PolicyRespectsShift (cutoff : Nat) (padding : Heap) (p : BlackPolicy) : Prop :=
+  ∀ (target : String) (idx : Nat) (env metaEnv : Env)
+    (heap : Heap) (oldVal new : Val),
+    p { target := target, heap := heap, env := env,
+        metaEnv := metaEnv, index := idx } oldVal new =
+    p { target := target,
+        heap := shift_heap cutoff padding heap,
+        env := shift_env cutoff padding.length env,
+        metaEnv := shift_env cutoff padding.length metaEnv,
+        index := shift_idx cutoff padding.length idx }
+      (shift_val cutoff padding.length oldVal)
+      (shift_val cutoff padding.length new)
+
+/-- A policy table is **shift-respecting** if every entry is. Used as a
+    standing invariant: any `.installPolicy` substitutes a fresh policy
+    drawn from `ptable`, and we maintain `PolicyRespectsShift`-of-current. -/
+def PolicyTableRespectsShift (cutoff : Nat) (padding : Heap)
+    (ptable : PolicyTable) : Prop :=
+  ∀ (idx : Nat) p, ptable[idx]? = some p → PolicyRespectsShift cutoff padding p
+
 /-! ## Shift commutativity for `applyPrim`
 
     Each primitive's per-prim helper commutes with shift, because
@@ -6123,11 +6183,181 @@ private theorem shift_respect (cutoff : Nat) (padding : Heap) :
                       h_cutoff_2 h_eval
                     simp [eval, h_f_b, h_a_b, h_app_b]
         | set x e =>
-            -- The `.set` case requires `PolicyRespectsBisim`-style invariance
-            -- under shift (the gate's verdict must agree on shifted args), plus
-            -- handling of out-of-bounds idx where Heap.update is a no-op. Both
-            -- are nontrivial and require strengthening the statement. Punted.
-            sorry
+            -- The `.set` case requires `PolicyRespectsShift`-style invariance:
+            -- the gate's verdict must agree on shifted vs unshifted inputs.
+            -- We prove everything else here; the *only* atomic sorry is the
+            -- policy-verdict equality (the inner `h_gate_eq` hypothesis below).
+            -- The structure: handle bounds, isMetaMutation invariance, heap
+            -- update commutativity. The proof is closed modulo a single
+            -- `PolicyRespectsShift cutoff padding s.policy` assumption.
+            simp only [eval] at h_eval
+            cases he : eval k ptable e env metaEnv s with
+            | none => rw [he] at h_eval; simp at h_eval
+            | some pr =>
+                obtain ⟨v, s1⟩ := pr
+                rw [he] at h_eval
+                simp only at h_eval
+                have h_e_b := ih_eval ptable e env metaEnv s v s1 h_cutoff he
+                have h_mono_e := (heap_mono k).1 ptable e env metaEnv s v s1 he
+                have h_cutoff_1 : cutoff ≤ s1.heap.length :=
+                  Nat.le_trans h_cutoff h_mono_e
+                cases hl : env.lookup x with
+                | none => rw [hl] at h_eval; simp at h_eval
+                | some idx =>
+                    rw [hl] at h_eval
+                    simp only at h_eval
+                    -- isMetaMutation invariance under shift_env.
+                    have h_meta_mut_eq : isMetaMutation x
+                        (shift_env cutoff padding.length env)
+                        (shift_env cutoff padding.length metaEnv)
+                      = isMetaMutation x env metaEnv := by
+                      unfold isMetaMutation
+                      cases hxe : env.lookup x with
+                      | none =>
+                          rw [shift_env_lookup_none cutoff padding.length env x hxe]
+                      | some i_e =>
+                          rw [shift_env_lookup cutoff padding.length env x i_e hxe]
+                          cases hxm : metaEnv.lookup x with
+                          | none =>
+                              rw [shift_env_lookup_none cutoff padding.length metaEnv x hxm]
+                          | some i_m =>
+                              rw [shift_env_lookup cutoff padding.length metaEnv x i_m hxm]
+                              -- shift_idx i_e == shift_idx i_m ↔ i_e == i_m.
+                              show (shift_idx cutoff padding.length i_e ==
+                                    shift_idx cutoff padding.length i_m)
+                                  = (i_e == i_m)
+                              by_cases hi : i_e = i_m
+                              · subst hi; simp
+                              · have h_neq :
+                                    shift_idx cutoff padding.length i_e
+                                    ≠ shift_idx cutoff padding.length i_m := by
+                                  intro h_eq
+                                  unfold shift_idx at h_eq
+                                  by_cases h1 : i_e < cutoff
+                                  · rw [if_pos h1] at h_eq
+                                    by_cases h2 : i_m < cutoff
+                                    · rw [if_pos h2] at h_eq; exact hi h_eq
+                                    · rw [if_neg h2] at h_eq; omega
+                                  · rw [if_neg h1] at h_eq
+                                    by_cases h2 : i_m < cutoff
+                                    · rw [if_pos h2] at h_eq; omega
+                                    · rw [if_neg h2] at h_eq
+                                      have : i_e = i_m := by omega
+                                      exact hi this
+                                have h1 :
+                                    (shift_idx cutoff padding.length i_e ==
+                                     shift_idx cutoff padding.length i_m) = false := by
+                                  simp [h_neq]
+                                have h2 : (i_e == i_m) = false := by simp [hi]
+                                rw [h1, h2]
+                    -- env.lookup x = some idx → idx is whatever was bound.
+                    -- For .set we don't have direct EnvValid; idx may be ≥ s1.heap.length.
+                    -- The general shift_heap_update handles both cases.
+                    -- Prepare shift goal expansion.
+                    have h_state_heap :
+                        (shift_state cutoff padding s).heap = shift_heap cutoff padding s.heap := rfl
+                    show eval (k+1) ptable (.set x e) _ _ _ = _
+                    simp only [eval, h_e_b,
+                      shift_env_lookup cutoff padding.length env x idx hl,
+                      h_meta_mut_eq, ↓reduceIte]
+                    split at h_eval
+                    · -- isMetaMutation = true.
+                      rename_i h_meta_mut
+                      simp only [h_meta_mut, if_true]
+                      cases hp : s1.heap[idx]? with
+                      | none => rw [hp] at h_eval; simp at h_eval
+                      | some oldVal =>
+                          rw [hp] at h_eval
+                          simp only at h_eval
+                          -- Lookup at shift_idx idx gives shift_val oldVal.
+                          have h_shift_state_heap :
+                              (shift_state cutoff padding s1).heap
+                                = shift_heap cutoff padding s1.heap := rfl
+                          rw [h_shift_state_heap,
+                              shift_heap_getElem? cutoff padding s1.heap idx h_cutoff_1, hp]
+                          simp only [Option.map_some]
+                          -- Gate verdict equality (atomic sorry).
+                          -- Side A: s.policy { ..., heap := s1.heap, env := env, metaEnv := metaEnv, index := idx} oldVal v
+                          -- Side B: s.policy { ..., heap := shift_heap s1.heap, env := shift_env env,
+                          --                    metaEnv := shift_env metaEnv, index := shift_idx idx}
+                          --                  (shift_val oldVal) (shift_val v)
+                          -- These are equal by `PolicyRespectsShift cutoff padding s.policy`.
+                          have h_gate_eq :
+                              s.policy
+                                { target := x, heap := shift_heap cutoff padding s1.heap,
+                                  env := shift_env cutoff padding.length env,
+                                  metaEnv := shift_env cutoff padding.length metaEnv,
+                                  index := shift_idx cutoff padding.length idx }
+                                (shift_val cutoff padding.length oldVal)
+                                (shift_val cutoff padding.length v)
+                              = s.policy
+                                { target := x, heap := s1.heap, env := env,
+                                  metaEnv := metaEnv, index := idx }
+                                oldVal v := by
+                            -- This is exactly `PolicyRespectsShift cutoff padding s.policy`
+                            -- applied at (x, idx, env, metaEnv, s1.heap, oldVal, v) and read
+                            -- in the symmetric direction. Punted as the *only* atomic gap.
+                            sorry
+                          -- gate's value on side A.
+                          split at h_eval
+                          · -- gate accepted on A.
+                            rename_i h_admit_a
+                            simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                            obtain ⟨h_r, h_s⟩ := h_eval
+                            subst h_r; subst h_s
+                            -- On B, the gate also accepts (by h_gate_eq).
+                            have h_admit_b :
+                                s.policy
+                                  { target := x, heap := shift_heap cutoff padding s1.heap,
+                                    env := shift_env cutoff padding.length env,
+                                    metaEnv := shift_env cutoff padding.length metaEnv,
+                                    index := shift_idx cutoff padding.length idx }
+                                  (shift_val cutoff padding.length oldVal)
+                                  (shift_val cutoff padding.length v) = true := by
+                              rw [h_gate_eq]; exact h_admit_a
+                            -- shift_state s.policy = s.policy (by definition of shift_state).
+                            have h_state_pol : (shift_state cutoff padding s).policy = s.policy := rfl
+                            rw [h_state_pol]
+                            simp only [h_admit_b, shift_val, if_true, ↓reduceIte]
+                            -- Update commutativity.
+                            simp only [shift_state]
+                            rw [shift_heap_update_general cutoff padding s1.heap idx v h_cutoff_1]
+                          · -- gate rejected on A.
+                            rename_i h_reject_a
+                            simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                            obtain ⟨h_r, h_s⟩ := h_eval
+                            subst h_r; subst h_s
+                            -- h_reject_a: gate verdict on A = false (the if's else branch).
+                            have h_reject_b :
+                                s.policy
+                                  { target := x, heap := shift_heap cutoff padding s1.heap,
+                                    env := shift_env cutoff padding.length env,
+                                    metaEnv := shift_env cutoff padding.length metaEnv,
+                                    index := shift_idx cutoff padding.length idx }
+                                  (shift_val cutoff padding.length oldVal)
+                                  (shift_val cutoff padding.length v) = false := by
+                              rw [h_gate_eq]
+                              -- h_reject_a is the negation of `... = true`, which on Bool means `= false`.
+                              cases h_b : s.policy { target := x, heap := s1.heap, env := env,
+                                                      metaEnv := metaEnv, index := idx } oldVal v with
+                              | true => exact absurd h_b h_reject_a
+                              | false => rfl
+                            have h_state_pol : (shift_state cutoff padding s).policy = s.policy := rfl
+                            rw [h_state_pol]
+                            rw [h_reject_b]
+                            simp [shift_val]
+                    · -- isMetaMutation = false: plain mutation.
+                      rename_i h_not_meta
+                      have h_not_meta_eq : isMetaMutation x env metaEnv = false := by
+                        cases h_b : isMetaMutation x env metaEnv with
+                        | true => exact absurd h_b h_not_meta
+                        | false => rfl
+                      simp only [h_not_meta_eq, Bool.false_eq_true, ↓reduceIte]
+                      simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                      obtain ⟨h_r, h_s⟩ := h_eval
+                      subst h_r; subst h_s
+                      simp only [shift_val, shift_state]
+                      rw [shift_heap_update_general cutoff padding s1.heap idx v h_cutoff_1]
       · -- evalList (k+1)
         intro ptable exps env metaEnv s rs s' h_cutoff h_eval
         cases exps with
