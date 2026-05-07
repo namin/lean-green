@@ -42,33 +42,51 @@ lean-green has the three ingredients required:
 2. **A parametric policy interface.** `BlackPolicy : MutationCtx →
    Val → Val → Bool` is the gate. Soundness is parameterized over
    an architectural floor `P : Val → Val → Prop`. The canonical
-   instance is `ConservativeExt`. Each entry of the verified policy
-   table comes (or should come) with a soundness theorem against `P`.
+   instances are `CE` (strong) and `CE_weak` (behavioral); see below.
+   Each entry of the verified policy table comes with a soundness
+   theorem against `P`.
 
-3. **A value-bisimulation infrastructure.** `Bisim.lean` defines
-   `ValVis` (closure-environment-pointwise refinement, à la CakeML)
-   and the framing theorem `frame` for `eval` / `evalList` /
-   `applyVia` / `applyDirect`. This is the machinery that lets us
-   reason about post-mutation behavior up to data refinement rather
-   than syntactic identity.
+3. **A two-tier value-bisimulation infrastructure.** `Bisim.lean`
+   defines `ValVis` (closure-environment-pointwise refinement, à la
+   CakeML; structural Lean-equality on captured envs) and the
+   framing theorem `frame` for `eval` / `evalList` / `applyVia` /
+   `applyDirect`, including the closed `.set` case. It also defines
+   `ValVis_weak` — same shape but with the structural-cenv-equality
+   clause dropped on the closure case, replaced by pointwise-bisim
+   on the cenvs. The bridge `ValVis ⟹ ValVis_weak` is direct.
+   `ValVis` is the relation `frame` produces and the `.set` proof
+   relies on; `ValVis_weak` is the relation that survives the
+   prefix-extension that fresh allocations introduce, and is the
+   right behavioral relation for stating CE on higher-order ops.
 
 The headline theorem `multnExact_soundForCE_first_install` is the
 concrete instance: under `multnExactPolicy`, post-install behavior
-is `ValVis`-related to pre-install behavior on the relevant trace.
+is `ValVis_weak`-related to pre-install behavior on the relevant
+trace. (The strong `ValVis` form is unprovable for closure-
+returning ops because of the cenv-shift inherent to fresh
+allocation; the weak form is the right behavioral statement.)
 What WAND.md asks is: *what is the general statement this is an
 instance of, and what does it say about the equational theory?*
 
 ## Statements, weakest to strongest
 
+The three statements below are stated against `BlackPolicy.SoundForCE_weak`
+(the behavioral CE soundness predicate, defined in `Policies.lean`
+alongside the strong `SoundForCE`). For first-order ops the two are
+equivalent; for closure-returning ops only `SoundForCE_weak` is provable
+in general, and it's the right relation for the keynote message ("the
+modification didn't break β" is a behavioral claim, not a
+syntactic-identity claim).
+
 ### W1 — Existential defeat (the minimum claim)
 
-Under any `ConservativeExt`-sound policy, observational equivalence
-is strictly finer than α-equivalence:
+Under any `SoundForCE_weak` policy, observational equivalence is
+strictly finer than α-equivalence:
 
 ```
 theorem wand_defeated_existential
     (policy : BlackPolicy)
-    (sound  : Policy.UnivSoundFor ConservativeExt policy) :
+    (sound  : policy.SoundForCE_weak) :
   ∃ M N : Expr, ¬ AlphaEquiv M N ∧ ObsEquiv_under policy M N
 ```
 
@@ -76,8 +94,8 @@ This is the bare minimum statement that the LICS audience needs to
 hear. It says: there exist two non-α-equivalent terms that no
 context can distinguish under the gated semantics. Witness: any
 β-redex and its contractum, e.g. `((λ x. x) 0)` and `0`. Under a
-CE-sound policy, no admitted modification can break β at the apply
-cell, so no context can distinguish them.
+CE_weak-sound policy, no admitted modification can break β at the
+apply cell, so no context can distinguish them.
 
 ### W2 — βη is contained in observational equivalence
 
@@ -87,17 +105,17 @@ Strengthen the existential to a containment over the standard
 ```
 theorem wand_defeated_strong
     (policy : BlackPolicy)
-    (sound  : Policy.UnivSoundFor ConservativeExt policy)
+    (sound  : policy.SoundForCE_weak)
     {M N   : Expr}
     (h     : BetaEtaEquiv M N) :
   ObsEquiv_under policy M N
 ```
 
-This says: under CE-sound policies, the full βη theory is
+This says: under CE_weak-sound policies, the full βη theory is
 observationally valid. The proof goes through the framing theorem:
-β-equivalent terms produce `ValVis`-related values across pre-/post-
-install heaps, and `ValVis` does not distinguish β-equivalent
-operands from observation.
+β-equivalent terms produce `ValVis_weak`-related values across pre-/
+post-install heaps, and `ValVis_weak` does not distinguish
+β-equivalent operands from observation.
 
 ### W3 — Lattice of equational theories
 
@@ -121,9 +139,9 @@ equivalence (more equations hold). The two extremes are:
 - `acceptAll` (admits everything) — Wand's collapse: ≃_obs reduces
   to α-equivalence.
 
-Every CE-sound policy sits below `acceptAll` and above (or equal
-to) `rejectAll` in this lattice. The non-trivial theories live
-in the interior.
+Every CE_weak-sound policy sits below `acceptAll` and above (or
+equal to) `rejectAll` in this lattice. The non-trivial theories
+live in the interior.
 
 This is the keynote-grade statement: *a lattice of equational
 theories indexed by the gate, with Wand at the top and βη at the
@@ -141,26 +159,26 @@ The simplest line: pick `M = ((λx. x) 0)` and `N = 0`. Then:
     identically by ordinary β; or
   - invokes `.set` with some `(old, new)` — then `policy ctx old
     new = true` is required for the install to take effect, and
-    `Policy.UnivSoundFor ConservativeExt policy` gives that the
-    post-install dispatch is CE-related to the pre-install
-    dispatch. β-reduction commutes with CE-related dispatch on the
-    relevant trace.
+    `policy.SoundForCE_weak` gives that the post-install dispatch
+    is `ValVis_weak`-related to the pre-install dispatch.
+    β-reduction commutes with `ValVis_weak`-related dispatch on
+    the relevant trace.
 
-The second case is where most of the work lives. The framing
-theorem `frame.eval` (lean-green's existing development) is
-exactly what discharges it — except for the open `.set` case
-(currently `sorry`). Closing that case is the prerequisite. See
-`README.md` *Open work* and `FUTURE.md` *Generalizing the
-infrastructure* for the three architectural options.
+Both cases use `frame.eval` (the closed `.set` case included),
+together with `applyDirect_heap_extend_weak` (the prefix-extension
+lemma whose statement is in `Bisim.lean` — body is the only
+remaining `sorry` in the framing development; see "Why the headline
+CE statement is `_weak`" below).
 
 ### W2 — induction on βη derivation
 
 Standard: induct on the βη derivation, dispatch each rule to a
-`ValVis`-preservation lemma. The hard rule is η at higher type;
-under closure-based `ValVis`, η on closures requires showing that
-the eta-expanded closure is `ValVis`-related to the original,
-which is true if `ValVis` respects the operational reading of the
-body. For the lean-green `Val` type this is direct.
+`ValVis_weak`-preservation lemma. The hard rule is η at higher type;
+under closure-based `ValVis_weak`, η on closures requires showing
+that the eta-expanded closure is `ValVis_weak`-related to the
+original. The weak relation's closure case demands only
+`EnvVis_aux_weak` on cenvs (not Lean equality), which is the right
+strength for η at higher type.
 
 Side conditions: closedness of the terms in question (lean-green's
 `closedValB` predicate already gates `.quote`); fuel; heap
@@ -231,89 +249,74 @@ not just a curiosity at the bottom of a lattice.
 ## Relation to the rest of the development
 
 - `multnExact_soundForCE_first_install` is the operational
-  archetype of W1: a single concrete CE-sound policy, a single
-  concrete admitted install, and `ValVis` between pre and post.
-  W1 is the universal-quantifier closure of that pattern.
-- `Policy.UnivSoundFor ConservativeExt` is exactly the hypothesis
-  the WAND theorems take. It is already the soundness predicate
-  the architecture uses. No new predicate needs to be invented.
-- `Bisim.lean` is the proof infrastructure. Nothing new is
-  required at the bisimulation layer beyond closing the open
-  `.set` case.
+  archetype of W1: a single concrete CE_weak-sound policy, a
+  single concrete admitted install, and `ValVis_weak` between
+  pre and post. W1 is the universal-quantifier closure of that
+  pattern.
+- `BlackPolicy.SoundForCE_weak` is exactly the hypothesis the
+  WAND theorems take. It is already the soundness predicate the
+  architecture uses post the two-tier refactor. No new predicate
+  needs to be invented.
+- `Bisim.lean` is the proof infrastructure. The two-tier `ValVis`
+  / `ValVis_weak` development is in place; the `.set` framing
+  case is closed; the only remaining proof work at the
+  bisimulation layer is closing `applyDirect_heap_extend_weak`'s
+  body (statement is in place, body is `sorry`).
 
 This is why WAND.md is a *future* document, not a separate
-project: the artifact is already most of the way there
-structurally. What is missing is (a) closing the framing gap,
+project: the artifact is most of the way there structurally.
+What is missing is (a) closing `applyDirect_heap_extend_weak`,
 (b) defining contextual equivalence, (c) writing the theorems.
 
-## Why the `.set` framing case was hard
+## Why the headline CE statement is `_weak`
 
-The `.set` case of `frame.eval` is closed, but the obstruction
-remains worth recording — it constrains the design of any future
-extension of the framing infrastructure.
+The `.set` framing case is closed. Closing it required strengthening
+`ValVis_aux_closure` to demand Lean-equal cenvs on related closures
+(combined with `WFCtx.env_eq`, this forces cross-side cell updates
+to target the same heap index). That strengthening is load-bearing:
+it's what makes the `.set` proof go through.
 
-**Why the natural attempt fails.** `multnExactPolicy` admits
-swapping a `.builtinBaseApply` (one `Val` constructor) for a
-`.closure` (a different `Val` constructor). `ValVis_aux` cannot
-relate these by inversion — they have different heads. Any
-strategy that tries to preserve `ValVis` *literally* across the
-`.set` will die on case analysis here. This is the architectural
-fact, not a missing lemma.
+The closing of CE for the multn-style install runs into a
+consequence of that strengthening. The proof technique runs side A
+at `s` and side B at `s_alloc = s.heap ++ [op, listToVal operands]`
+(the multn closure body's pre-allocated arg cells). Fresh
+allocations on side B happen at indices shifted by two from their
+side-A counterparts. Any `.lam` evaluated under the resulting env
+produces a closure whose cenv is the current env — which is *not*
+Lean-equal across the two sides on the args-binding portion. So
+`ValVis_aux_closure` fails on the result, and the strong `CE`
+claim is **false** for closure-returning ops.
 
-**Which architectural option is right for WAND.** Of the three in
-`FUTURE.md` *Generalizing the infrastructure*:
+**The fix is two-tier bisim.** `ValVis_weak` drops the Lean-
+equality requirement, keeping only the pointwise-bisim relation on
+cenvs. Under `ValVis_weak`, the cenvs look up to bisim cells (the
+args have the same values, just at different addresses), so the
+relation holds for higher-order results. `CE_weak` is the
+behavioral CE statement that's true and what the keynote should
+claim.
 
-- *Set-free domain restriction.* Already tried and reverted.
-  Useless for WAND anyway: adversarial contexts will use `.set`.
-- *HeapEvolves with a policy-respecting-bisim invariant*
-  (~500 LOC). This is the right one. The invariant the option
-  asks you to add to `WFCtx` — "the heap evolves only by
-  mutations admitted by some CE-sound policy" — is *exactly* the
-  predicate WAND wants to lift to "observational equivalence is
-  preserved under the active policy." The option's auxiliary
-  hypothesis becomes WAND's premise. One development serves
-  both ends; the proof investment pays for itself twice.
-- *Step-indexed logical relation.* Major rewrite. Probably
-  needed eventually if W2 (full βη ⊆ ≃_obs) is pursued at
-  higher type. Not needed for W1 or W3. Punt.
+The two-tier architecture is additive: `ValVis ⟹ ValVis_weak` via
+the bridge `ValVis_to_weak`. Existing strong-`ValVis` proofs (the
+`.set` framing, `frame`, the policy-soundness theorems on inputs)
+are unchanged. CE on outputs is downgraded to the weak form, which
+is what behavioral equivalence requires anyway.
 
-**The bisim invariant to invent is one already in the
-architecture.** The predicate that needs to be threaded through
-`HeapEvolves` is the same shape as `Policy.UnivSoundFor
-ConservativeExt`, lifted to pairs of heaps:
+**The remaining open `sorry`** is in `applyDirect_heap_extend_weak`
+(`Bisim.lean`): the prefix-extension lemma at `ValVis_weak`. Its
+statement is true (the cenv-shift obstruction is resolved by the
+weaker relation); its proof is a routine joint mutual induction on
+fuel for `eval / evalList / applyVia / applyDirect`, structurally
+similar to `frame`'s ~1500 LOC proof but single-side and with the
+weaker conclusion (no `WFCtx.env_eq` / `heap_len_eq` invariants to
+thread). Estimated 600-800 LOC.
 
-```
-HeapPolicyBisim policy heap_a heap_b ↔
-  ∀ idx old_a old_b new_a new_b,
-    policy ctx_a old_a new_a → policy ctx_b old_b new_b →
-    ValVis old_a old_b heap_a heap_b →
-    ValVis new_a new_b heap_a heap_b
-```
-
-i.e. *the policy admits only modifications that preserve the
-bisimulation*. CE-sound policies satisfy this; it is the
-universal-quantifier closure of the operational lemma already
-proved for `multnExactPolicy`. The work is naming the predicate,
-proving each policy in `verifiedTable` satisfies it (which
-mostly reduces to the soundness theorems already there), and
-threading it through `WFCtx` and the framing cases.
-
-**The `.set` case itself, once the invariant is in scope,
-becomes routine.** Two heaps, both updating the same cell with
-values the policy admits, and the invariant guarantees the new
-values are `ValVis`-related on the post-update heaps. The case
-splits structurally; no new clever insight required past the
-invariant.
-
-**A cheaper near-term route, if the prover is stuck.** Prove a
-restricted version: `frame.eval` for `.set _ _` *under the
-hypothesis that the new value is ValVis-related to the old one
-on both sides*. This is admittedly a hypothesis the runner does
-not currently establish, but it lets the development unblock —
-W1 with the β-redex witness goes through, the WAND demo lands —
-and the obligation to discharge the hypothesis becomes a
-follow-up rather than a blocker. WAND.md as written assumes the
-full closure; this is the escape hatch.
+**Why a previously proposed shorter route doesn't work.** Earlier
+notes proposed proving the prefix-extension at the strong `ValVis`
+in ~200-300 LOC. That conclusion turned out to be false (the
+cenv-shift obstruction above), and the LOC estimate underweighted
+the two-tier development that actually closes things. The ~600-800
+LOC budget is the realistic one — large but mechanical, with no
+new architectural design decisions remaining.
 
 ## References
 
