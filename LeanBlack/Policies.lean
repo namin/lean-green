@@ -541,7 +541,9 @@ theorem multnExact_CE_nonnum_case
     (h_admit : multnExactPolicy ctx .builtinBaseApply new = true)
     {fuel : Nat} (h_fuel : fuel ≥ 2)
     {ptable : PolicyTable} {op : Val} (h_op : OpNotNum op)
+    (hresp_pt : PolicyTableRespectsBisim ptable)
     {operands : List Val} {metaEnv : Env} {s : RunState}
+    (hresp_init : PolicyRespectsBisim s.policy)
     {r : Val} {s' : RunState}
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
@@ -643,7 +645,8 @@ theorem multnExact_CE_nonnum_case
     ListValVis_self_extend [op, listToVal operands] h_heap hv_operands
   have h_state_ext : StateExt s s_alloc := by show s.policy = s_alloc.policy; rfl
   have h_ctx : WFCtx metaEnv metaEnv metaEnv s s_alloc :=
-    ⟨h_state_ext, h_heap, hh_alloc, h_meta_valid, hem_alloc, h_meta_valid, hem_alloc⟩
+    ⟨h_state_ext, h_heap, hh_alloc, h_meta_valid, hem_alloc, h_meta_valid, hem_alloc,
+     hresp_init⟩
   have h_meta_vis : EnvVis metaEnv metaEnv s.heap s_alloc.heap := by
     intro d
     show EnvVis_aux d metaEnv metaEnv s.heap (s.heap ++ [op, listToVal operands])
@@ -651,18 +654,20 @@ theorem multnExact_CE_nonnum_case
       h_meta_valid h_heap ⟨_, rfl⟩
       (fun v hv_v => ValVis_aux_self_extend d v s.heap _ h_heap hv_v)
   obtain ⟨_, _, _, frame_apply⟩ := frame fuel
-  obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', _, h_he_b', _, _, _⟩ :=
+  obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he, _, _, _⟩ :=
     frame_apply ptable op op operands operands metaEnv s s_alloc r s'
-      h_ctx h_vv_op h_lvv_operands h_meta_vis hv_op hv_op_alloc
+      hresp_pt h_ctx h_vv_op h_lvv_operands h_meta_vis hv_op hv_op_alloc
       hv_operands hv_operands_alloc h_app
   -- Strengthened-CE post-state conjuncts.
   have h_policy : s'.policy = s_b'.policy := h_ctx'.state_ext
   have h_heap_valid : HeapValid s_b'.heap := h_ctx'.hv_b
   have h_heap_mono : s.heap.length ≤ s_b'.heap.length := by
     -- s.heap → s_alloc.heap (alloc'd two cells) → s_b'.heap (frame).
-    have h_he_s_to_alloc : HeapExt s s_alloc :=
-      ⟨[op, listToVal operands], rfl⟩
-    exact (HeapExt.trans h_he_s_to_alloc h_he_b').heap_le
+    -- Length monotonicity composes via Nat.le_trans.
+    have h_alloc_len : s.heap.length ≤ s_alloc.heap.length := by
+      show s.heap.length ≤ (s.heap ++ [op, listToVal operands]).length
+      rw [List.length_append]; exact Nat.le_add_right _ _
+    exact Nat.le_trans h_alloc_len h_he.len_b
   -- Combine: h_trace gives the outer = inner-applyDirect equality, and
   -- h_eval_b gives the inner-applyDirect = some result.
   refine ⟨fuel + 4, s_b', r_b, ?_, h_vv_r, h_policy, h_heap_valid, h_heap_mono⟩
@@ -679,7 +684,9 @@ theorem multnExact_soundForCE_first_install
     (h_admit : multnExactPolicy ctx .builtinBaseApply new = true)
     {fuel : Nat} (h_fuel : fuel ≥ 2)
     {ptable : PolicyTable} {op : Val}
+    (hresp_pt : PolicyTableRespectsBisim ptable)
     {operands : List Val} {metaEnv : Env} {s : RunState}
+    (hresp_init : PolicyRespectsBisim s.policy)
     {r : Val} {s' : RunState}
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
@@ -698,7 +705,7 @@ theorem multnExact_soundForCE_first_install
   · have h_op : OpNotNum op := by
       intro n hop_num
       exact hn ⟨n, hop_num⟩
-    exact multnExact_CE_nonnum_case h_admit h_fuel h_op h_old install wf
+    exact multnExact_CE_nonnum_case h_admit h_fuel h_op hresp_pt hresp_init h_old install wf
 
 /-! ## The verified policy table -/
 

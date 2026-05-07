@@ -175,6 +175,41 @@ theorem getElem?_prefix (h_a : Heap) (extras : List Val) (i : Nat)
     (h_a ++ extras)[i]? = h_a[i]? := by
   rw [List.getElem?_append_left h_lt]
 
+/-! ## `Heap.update` structural lemmas -/
+
+theorem Heap.update_length : ∀ (h : Heap) (idx : Nat) (v : Val),
+    (Heap.update h idx v).length = h.length
+  | [],       _,     _ => rfl
+  | _ :: _,   0,     _ => rfl
+  | _ :: t,   n + 1, v => by
+      simp only [Heap.update, List.length_cons]
+      exact congrArg Nat.succ (Heap.update_length t n v)
+
+/-- Lookup at the updated index returns the new value (provided
+    the index is in bounds). -/
+theorem Heap.update_get_eq : ∀ (h : Heap) (idx : Nat) (v : Val),
+    idx < h.length → (Heap.update h idx v)[idx]? = some v
+  | [],       _,     _, h_lt => by simp at h_lt
+  | _ :: _,   0,     _, _    => rfl
+  | _ :: t,   n + 1, v, h_lt => by
+      simp only [Heap.update, List.getElem?_cons_succ]
+      have : n < t.length := by
+        simp only [List.length_cons] at h_lt
+        omega
+      exact Heap.update_get_eq t n v this
+
+/-- Lookup at any index ≠ idx is unchanged by the update. -/
+theorem Heap.update_get_neq : ∀ (h : Heap) (idx : Nat) (v : Val) (i : Nat),
+    i ≠ idx → (Heap.update h idx v)[i]? = h[i]?
+  | [],       _,     _, _, _    => rfl
+  | _ :: _,   0,     _, 0, hne  => absurd rfl hne
+  | _ :: _,   0,     _, _ + 1, _ => rfl
+  | _ :: t,   n + 1, v, 0, _    => rfl
+  | _ :: t,   n + 1, v, i + 1, hne => by
+      simp only [Heap.update, List.getElem?_cons_succ]
+      have : i ≠ n := fun h_eq => hne (congrArg Nat.succ h_eq)
+      exact Heap.update_get_neq t n v i this
+
 /-! ## Reflexivity at every depth
 
     A value is bisimilar to itself in any heap, provided env-validity
@@ -510,6 +545,135 @@ theorem EnvVis_aux_extends (n : Nat) :
 
 end
 
+/-! ## Heap evolution (cross-side framing across in-place updates) -/
+
+/-- **Heap evolution** (cross-side): a strictly weaker relation than
+    `HeapExt s_a s_a' ∧ HeapExt s_b s_b'`. The four-place relation
+    `HeapEvolution s_a s_b s_a' s_b'` captures what's preserved across
+    a *both-sides* step: heap length grows on each side, *and* any
+    cross-side env-bisim that held at the source pair `(s_a, s_b)`
+    still holds at the target pair `(s_a', s_b')`.
+
+    This is the right relation for framing across `.set` (which
+    performs an in-place `Heap.update` and breaks the prefix
+    structure of `HeapExt`). The same-side analog would require old
+    and new values at the updated cell to be self-bisim-related,
+    which fails for `multnExactPolicy` (admits
+    `.builtinBaseApply → multn-closure`, not self-bisim). The
+    cross-side formulation works because both sides update with
+    bisim-*related* new values (via `policy_respects_bisim`), even
+    when same-side old/new aren't related.
+
+    Reflexive, transitive, length-monotone, lifted from
+    `HeapExt s_a s_a' ∧ HeapExt s_b s_b'` via `from_heapExt`. -/
+structure HeapEvolution (s_a s_b s_a' s_b' : RunState) : Prop where
+  len_a : s_a.heap.length ≤ s_a'.heap.length
+  len_b : s_b.heap.length ≤ s_b'.heap.length
+  /-- For every depth `n` and every pair of envs that were valid in
+      the source state pair and bisim-related at depth `n`, the same
+      envs remain bisim-related in the target state pair at the same
+      depth. -/
+  env_preserve : ∀ (n : Nat) (env_a env_b : Env),
+    EnvValid env_a s_a.heap → EnvValid env_b s_b.heap →
+    EnvVis_aux n env_a env_b s_a.heap s_b.heap →
+    EnvVis_aux n env_a env_b s_a'.heap s_b'.heap
+  /-- For every depth `n` and every pair of values that were valid in
+      the source state pair and bisim-related at depth `n`, the same
+      values remain bisim-related in the target state pair at the
+      same depth. Used to lift `ValVis` of operands/funcs across
+      inner-step heap evolutions in the `.app` / `.primApp` cases. -/
+  val_preserve : ∀ (n : Nat) (v_a v_b : Val),
+    ValValid v_a s_a.heap → ValValid v_b s_b.heap →
+    ValVis_aux n v_a v_b s_a.heap s_b.heap →
+    ValVis_aux n v_a v_b s_a'.heap s_b'.heap
+
+theorem HeapEvolution.refl (s_a s_b : RunState) :
+    HeapEvolution s_a s_b s_a s_b :=
+  ⟨Nat.le_refl _, Nat.le_refl _,
+   fun _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩
+
+/-- Lift a single-value bisim across `HeapEvolution` (universal-depth). -/
+theorem HeapEvolution.valVis_preserve {s_a s_b s_a' s_b' : RunState}
+    (h : HeapEvolution s_a s_b s_a' s_b') (v_a v_b : Val)
+    (hv_a : ValValid v_a s_a.heap) (hv_b : ValValid v_b s_b.heap)
+    (h_vis : ValVis v_a v_b s_a.heap s_b.heap) :
+    ValVis v_a v_b s_a'.heap s_b'.heap := by
+  intro n
+  exact h.val_preserve n v_a v_b hv_a hv_b (h_vis n)
+
+/-- Lift an env bisim across `HeapEvolution` (universal-depth). -/
+theorem HeapEvolution.envVis_preserve {s_a s_b s_a' s_b' : RunState}
+    (h : HeapEvolution s_a s_b s_a' s_b') (env_a env_b : Env)
+    (hv_a : EnvValid env_a s_a.heap) (hv_b : EnvValid env_b s_b.heap)
+    (h_vis : EnvVis env_a env_b s_a.heap s_b.heap) :
+    EnvVis env_a env_b s_a'.heap s_b'.heap := by
+  intro n
+  exact h.env_preserve n env_a env_b hv_a hv_b (h_vis n)
+
+/-- Validity is preserved under length-monotone evolution. -/
+theorem EnvValid.length_mono {env : Env} {h_a h_b : Heap}
+    (hv : EnvValid env h_a) (hlen : h_a.length ≤ h_b.length) :
+    EnvValid env h_b := by
+  intro x i hl
+  exact Nat.lt_of_lt_of_le (hv x i hl) hlen
+
+theorem ValValid.length_mono {h_a h_b : Heap} :
+    ∀ (v : Val), ValValid v h_a → h_a.length ≤ h_b.length → ValValid v h_b
+  | .num _,            _,  _    => trivial
+  | .bool _,           _,  _    => trivial
+  | .nilV,             _,  _    => trivial
+  | .sym _,            _,  _    => trivial
+  | .prim _,           _,  _    => trivial
+  | .builtinBaseApply, _,  _    => trivial
+  | .cons x y,         hv, hlen =>
+      ⟨ValValid.length_mono x hv.1 hlen, ValValid.length_mono y hv.2 hlen⟩
+  | .closure _ _ _,    hv, hlen =>
+      EnvValid.length_mono hv hlen
+
+/-- Transitivity of `HeapEvolution`. Composes env-preservation across
+    intermediate state pairs; needs heap validity of the intermediate
+    state pair to lift `EnvValid` for the second `env_preserve` call. -/
+theorem HeapEvolution.trans {s_a s_b s_a' s_b' s_a'' s_b'' : RunState}
+    (h1 : HeapEvolution s_a s_b s_a' s_b')
+    (h2 : HeapEvolution s_a' s_b' s_a'' s_b'') :
+    HeapEvolution s_a s_b s_a'' s_b'' := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · exact Nat.le_trans h1.len_a h2.len_a
+  · exact Nat.le_trans h1.len_b h2.len_b
+  · intro n env_a env_b hv_a hv_b h_vis
+    have h_vis' : EnvVis_aux n env_a env_b s_a'.heap s_b'.heap :=
+      h1.env_preserve n env_a env_b hv_a hv_b h_vis
+    have hv_a' : EnvValid env_a s_a'.heap := hv_a.length_mono h1.len_a
+    have hv_b' : EnvValid env_b s_b'.heap := hv_b.length_mono h1.len_b
+    exact h2.env_preserve n env_a env_b hv_a' hv_b' h_vis'
+  · intro n v_a v_b hv_a hv_b h_vis
+    have h_vis' : ValVis_aux n v_a v_b s_a'.heap s_b'.heap :=
+      h1.val_preserve n v_a v_b hv_a hv_b h_vis
+    have hv_a' : ValValid v_a s_a'.heap := ValValid.length_mono v_a hv_a h1.len_a
+    have hv_b' : ValValid v_b s_b'.heap := ValValid.length_mono v_b hv_b h1.len_b
+    exact h2.val_preserve n v_a v_b hv_a' hv_b' h_vis'
+
+/-- Lift a pair of `HeapExt`s to a `HeapEvolution`. Used at allocation
+    sites (each side appends extras to its heap; old cells preserved).
+    Requires heap validity to invoke `ValVis_aux_extends`/`EnvVis_aux_extends`. -/
+theorem HeapEvolution.from_heapExt {s_a s_b s_a' s_b' : RunState}
+    (hh_a : HeapValid s_a.heap) (hh_b : HeapValid s_b.heap)
+    (he_a : HeapExt s_a s_a') (he_b : HeapExt s_b s_b') :
+    HeapEvolution s_a s_b s_a' s_b' := by
+  obtain ⟨ext_a, hex_a⟩ := he_a
+  obtain ⟨ext_b, hex_b⟩ := he_b
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · rw [hex_a, List.length_append]; exact Nat.le_add_right _ _
+  · rw [hex_b, List.length_append]; exact Nat.le_add_right _ _
+  · intro n env_a env_b hv_a hv_b h_vis
+    rw [hex_a, hex_b]
+    exact EnvVis_aux_extends n env_a env_b s_a.heap s_b.heap ext_a ext_b
+      hh_a hh_b hv_a hv_b h_vis
+  · intro n v_a v_b hv_a hv_b h_vis
+    rw [hex_a, hex_b]
+    exact ValVis_aux_extends n v_a v_b s_a.heap s_b.heap ext_a ext_b
+      hh_a hh_b hv_a hv_b h_vis
+
 /-! ## Pointwise list bisimulation
 
     For framing `applyVia` and `applyDirect` (which take `args : List Val`),
@@ -541,6 +705,28 @@ theorem ListValValid.heap_extends : ∀ {xs : List Val} {h_a h_b : Heap},
   | _ :: _, _, _, hv, hext =>
       ⟨ValValid.heap_extends _ hv.1 hext,
        ListValValid.heap_extends hv.2 hext⟩
+
+theorem ListValValid.length_mono {h_a h_b : Heap} :
+    ∀ {xs : List Val}, ListValValid xs h_a → h_a.length ≤ h_b.length →
+      ListValValid xs h_b
+  | [],     _,  _    => trivial
+  | _ :: _, hv, hlen =>
+      ⟨ValValid.length_mono _ hv.1 hlen,
+       ListValValid.length_mono hv.2 hlen⟩
+
+/-- Lift a list bisim across `HeapEvolution` (universal-depth). -/
+theorem HeapEvolution.listValVis_preserve {s_a s_b s_a' s_b' : RunState}
+    (h : HeapEvolution s_a s_b s_a' s_b') :
+    ∀ (xs ys : List Val),
+      ListValValid xs s_a.heap → ListValValid ys s_b.heap →
+      ListValVis xs ys s_a.heap s_b.heap →
+      ListValVis xs ys s_a'.heap s_b'.heap
+  | [],     [],     _,    _,    _    => trivial
+  | [],     _ :: _, _,    _,    h_v  => h_v.elim
+  | _ :: _, [],     _,    _,    h_v  => h_v.elim
+  | x :: xs, y :: ys, hv_a, hv_b, ⟨h_head, h_tail⟩ =>
+      ⟨h.valVis_preserve x y hv_a.1 hv_b.1 h_head,
+       h.listValVis_preserve xs ys hv_a.2 hv_b.2 h_tail⟩
 
 /-! ## Bool false characterization -/
 
@@ -2142,10 +2328,44 @@ theorem closure_ValVis_imp_cenv_EnvVis
     `EnvVis` through inner allocs.
 -/
 
+/-- A policy **respects bisim**: cross-side, the policy gives the
+    same admit/reject decision on bisim-related arguments evaluated
+    in bisim-related heaps. This is the property that makes the
+    framing theorem's `.set` case go through.
+
+    The policy can inspect the heap, env, metaEnv via `MutationCtx`,
+    so we require it to agree under bisim of those components (env
+    and metaEnv are the *same* on both sides — they're identifier-
+    to-index maps that the runtime uses on both sides identically;
+    heaps differ but are `EnvVis`-related).
+    -/
+def PolicyRespectsBisim (p : BlackPolicy) : Prop :=
+  ∀ (target : String) (idx : Nat) (env metaEnv : Env)
+    (heap_a heap_b : Heap) (oldVal_a oldVal_b new_a new_b : Val),
+    HeapValid heap_a → HeapValid heap_b →
+    EnvValid env heap_a → EnvValid env heap_b →
+    EnvValid metaEnv heap_a → EnvValid metaEnv heap_b →
+    ValValid oldVal_a heap_a → ValValid oldVal_b heap_b →
+    ValValid new_a heap_a → ValValid new_b heap_b →
+    EnvVis env env heap_a heap_b →
+    EnvVis metaEnv metaEnv heap_a heap_b →
+    ValVis oldVal_a oldVal_b heap_a heap_b →
+    ValVis new_a new_b heap_a heap_b →
+    p { target := target, heap := heap_a, env := env,
+        metaEnv := metaEnv, index := idx } oldVal_a new_a =
+    p { target := target, heap := heap_b, env := env,
+        metaEnv := metaEnv, index := idx } oldVal_b new_b
+
+/-- A policy table where every entry respects bisim. -/
+def PolicyTableRespectsBisim (ptable : PolicyTable) : Prop :=
+  ∀ (idx : Nat) p, ptable[idx]? = some p → PolicyRespectsBisim p
+
 /-- Well-formed runtime context for the bisimulation: state pairs
     related by `StateExt`, heaps `HeapValid`, envs `EnvValid` in
-    their respective heaps. Threaded through `eval` to enable use
-    of `EnvVis_aux_extends` in recursive cases. -/
+    their respective heaps, plus the active policy on side A
+    (= side B by `state_ext`) respects bisim. Threaded through
+    `eval` to enable use of `EnvVis_aux_extends` in recursive cases
+    and the `.set` framing case. -/
 structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
   state_ext : StateExt s_a s_b
   hv_a      : HeapValid s_a.heap
@@ -2154,16 +2374,19 @@ structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
   ev_b      : EnvValid env_b s_b.heap
   em_a      : EnvValid metaEnv s_a.heap
   em_b      : EnvValid metaEnv s_b.heap
+  policy_resp : PolicyRespectsBisim s_a.policy
 
 theorem WFCtx.refl (env metaEnv : Env) (s : RunState)
     (hh : HeapValid s.heap) (hev : EnvValid env s.heap)
-    (hem : EnvValid metaEnv s.heap) :
+    (hem : EnvValid metaEnv s.heap)
+    (hresp : PolicyRespectsBisim s.policy) :
     WFCtx env env metaEnv s s :=
-  ⟨StateExt.refl s, hh, hh, hev, hev, hem, hem⟩
+  ⟨StateExt.refl s, hh, hh, hev, hev, hem, hem, hresp⟩
 
 private def FrameStmt (n : Nat) : Prop :=
   (∀ (ptable : PolicyTable) (exp : Expr) (env_a env_b metaEnv : Env)
      (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
+    PolicyTableRespectsBisim ptable →
     WFCtx env_a env_b metaEnv s_a s_b →
     EnvVis env_a env_b s_a.heap s_b.heap →
     EnvVis metaEnv metaEnv s_a.heap s_b.heap →
@@ -2172,12 +2395,13 @@ private def FrameStmt (n : Nat) : Prop :=
       eval n ptable exp env_b metaEnv s_b = some (r_b, s_b') ∧
       ValVis r_a r_b s_a'.heap s_b'.heap ∧
       WFCtx env_a env_b metaEnv s_a' s_b' ∧
-      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
+      HeapEvolution s_a s_b s_a' s_b' ∧
       EnvVis env_a env_b s_a'.heap s_b'.heap ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
       ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap) ∧
   (∀ (ptable : PolicyTable) (exps : List Expr) (env_a env_b metaEnv : Env)
      (s_a s_b : RunState) (rs_a : List Val) (s_a' : RunState),
+    PolicyTableRespectsBisim ptable →
     WFCtx env_a env_b metaEnv s_a s_b →
     EnvVis env_a env_b s_a.heap s_b.heap →
     EnvVis metaEnv metaEnv s_a.heap s_b.heap →
@@ -2186,12 +2410,13 @@ private def FrameStmt (n : Nat) : Prop :=
       evalList n ptable exps env_b metaEnv s_b = some (rs_b, s_b') ∧
       ListValVis rs_a rs_b s_a'.heap s_b'.heap ∧
       WFCtx env_a env_b metaEnv s_a' s_b' ∧
-      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
+      HeapEvolution s_a s_b s_a' s_b' ∧
       EnvVis env_a env_b s_a'.heap s_b'.heap ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
       ListValValid rs_a s_a'.heap ∧ ListValValid rs_b s_b'.heap) ∧
   (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
      (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
+    PolicyTableRespectsBisim ptable →
     WFCtx metaEnv metaEnv metaEnv s_a s_b →
     ValVis op_a op_b s_a.heap s_b.heap →
     ListValVis args_a args_b s_a.heap s_b.heap →
@@ -2203,11 +2428,12 @@ private def FrameStmt (n : Nat) : Prop :=
       applyVia n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
       ValVis r_a r_b s_a'.heap s_b'.heap ∧
       WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
-      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
+      HeapEvolution s_a s_b s_a' s_b' ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
       ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap) ∧
   (∀ (ptable : PolicyTable) (op_a op_b : Val) (args_a args_b : List Val)
      (metaEnv : Env) (s_a s_b : RunState) (r_a : Val) (s_a' : RunState),
+    PolicyTableRespectsBisim ptable →
     WFCtx metaEnv metaEnv metaEnv s_a s_b →
     ValVis op_a op_b s_a.heap s_b.heap →
     ListValVis args_a args_b s_a.heap s_b.heap →
@@ -2219,7 +2445,7 @@ private def FrameStmt (n : Nat) : Prop :=
       applyDirect n ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
       ValVis r_a r_b s_a'.heap s_b'.heap ∧
       WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
-      HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
+      HeapEvolution s_a s_b s_a' s_b' ∧
       EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
       ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap)
 
@@ -2237,15 +2463,15 @@ theorem frame : ∀ n, FrameStmt n := by
   induction n with
   | zero =>
       refine ⟨?_, ?_, ?_, ?_⟩
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ h; simp [eval] at h
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ h; simp [evalList] at h
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyVia] at h
-      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyDirect] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [eval] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [evalList] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyVia] at h
+      · intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ h; simp [applyDirect] at h
   | succ k ih =>
       obtain ⟨ih_eval, ih_evalList, ih_applyVia, ih_applyDirect⟩ := ih
       refine ⟨?_, ?_, ?_, ?_⟩
       · -- eval (k+1)
-        intro ptable exp env_a env_b metaEnv s_a s_b r_a s_a' h_ctx h_env h_meta h_eval
+        intro ptable exp env_a env_b metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_env h_meta h_eval
         have h_state := h_ctx.state_ext
         cases exp with
         | num i =>
@@ -2253,7 +2479,7 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.num i, s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                    HeapEvolution.refl _ _, h_env, h_meta, trivial, trivial⟩
             · simp [eval]
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
@@ -2262,7 +2488,7 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.bool b, s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                    HeapEvolution.refl _ _, h_env, h_meta, trivial, trivial⟩
             · simp [eval]
             · intro depth
               cases depth with | zero => trivial | succ _ => rfl
@@ -2277,7 +2503,7 @@ theorem frame : ∀ n, FrameStmt n := by
               obtain ⟨h_r, h_s⟩ := h_eval
               subst h_r; subst h_s
               refine ⟨v, s_b, ?_, ?_, h_ctx,
-                      HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
+                      HeapEvolution.refl _ _, h_env, h_meta,
                       closedValB_ValValid v s_a.heap h_closed,
                       closedValB_ValValid v s_b.heap h_closed⟩
               · simp [eval, h_closed]
@@ -2313,7 +2539,7 @@ theorem frame : ∀ n, FrameStmt n := by
                             rw [hp_b] at h_x1; simp only at h_x1
                         | some v_b =>
                             refine ⟨v_b, s_b, ?_, ?_, h_ctx,
-                                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
+                                    HeapEvolution.refl _ _, h_env, h_meta,
                                     h_ctx.hv_a i_a v_a hp_a, h_ctx.hv_b i_b v_b hp_b⟩
                             · simp [eval, hl_b, hp_b]
                             · intro depth
@@ -2327,7 +2553,7 @@ theorem frame : ∀ n, FrameStmt n := by
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨.closure ps body env_b, s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta,
+                    HeapEvolution.refl _ _, h_env, h_meta,
                     h_ctx.ev_a, h_ctx.ev_b⟩
             · simp [eval]
             · intro depth
@@ -2345,7 +2571,7 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨h_r, h_s⟩ := h_eval
                 subst h_r; subst h_s
                 refine ⟨.bool false, s_b, ?_, ?_, h_ctx,
-                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                        HeapEvolution.refl _ _, h_env, h_meta, trivial, trivial⟩
                 · simp [eval, hp]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => rfl
@@ -2361,8 +2587,10 @@ theorem frame : ∀ n, FrameStmt n := by
                         ⟨rfl,
                          h_ctx.hv_a, h_ctx.hv_b,
                          h_ctx.ev_a, h_ctx.ev_b,
-                         h_ctx.em_a, h_ctx.em_b⟩,
-                        HeapExt.refl _, HeapExt.refl _,
+                         h_ctx.em_a, h_ctx.em_b,
+                         hresp_pt idx newPolicy hp⟩,
+                        ⟨Nat.le_refl _, Nat.le_refl _,
+                         fun _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩,
                         h_env, h_meta, trivial, trivial⟩
                 · simp [eval, hp]
                 · intro depth
@@ -2372,27 +2600,27 @@ theorem frame : ∀ n, FrameStmt n := by
             -- IH on body uses metaEnv as env on both sides.
             have h_ctx_meta : WFCtx metaEnv metaEnv metaEnv s_a s_b :=
               ⟨h_ctx.state_ext, h_ctx.hv_a, h_ctx.hv_b,
-               h_ctx.em_a, h_ctx.em_b, h_ctx.em_a, h_ctx.em_b⟩
-            obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he_a, h_he_b,
+               h_ctx.em_a, h_ctx.em_b, h_ctx.em_a, h_ctx.em_b,
+               h_ctx.policy_resp⟩
+            obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he,
                     _h_env_meta, h_meta', hv_ra, hv_rb⟩ :=
               ih_eval ptable body metaEnv metaEnv metaEnv s_a s_b r_a s_a'
-                h_ctx_meta h_meta h_meta h_eval
-            -- Derive EnvVis env_a env_b s_a'.heap s_b'.heap from
-            -- h_env + heap extension via `EnvVis_extends`.
-            obtain ⟨extras_a, h_a_eq⟩ := h_he_a
-            obtain ⟨extras_b, h_b_eq⟩ := h_he_b
+                hresp_pt h_ctx_meta h_meta h_meta h_eval
+            -- Derive EnvVis env_a env_b s_a'.heap s_b'.heap from h_env via
+            -- HeapEvolution's env_preserve property.
             have h_env' : EnvVis env_a env_b s_a'.heap s_b'.heap := by
-              rw [h_a_eq, h_b_eq]
-              exact EnvVis_extends env_a env_b s_a.heap s_b.heap extras_a extras_b
-                h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
-            -- WFCtx env_a env_b metaEnv s_a' s_b' from IH + heap_extends
+              intro n
+              exact h_he.env_preserve n env_a env_b
+                h_ctx.ev_a h_ctx.ev_b (h_env n)
+            -- Lift env validity via length monotonicity.
             have h_ctx_out : WFCtx env_a env_b metaEnv s_a' s_b' :=
               ⟨h_ctx'.state_ext, h_ctx'.hv_a, h_ctx'.hv_b,
-               EnvValid.heap_extends h_ctx.ev_a ⟨extras_a, h_a_eq⟩,
-               EnvValid.heap_extends h_ctx.ev_b ⟨extras_b, h_b_eq⟩,
-               h_ctx'.em_a, h_ctx'.em_b⟩
+               h_ctx.ev_a.length_mono h_he.len_a,
+               h_ctx.ev_b.length_mono h_he.len_b,
+               h_ctx'.em_a, h_ctx'.em_b,
+               h_ctx'.policy_resp⟩
             refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
-                    ⟨extras_a, h_a_eq⟩, ⟨extras_b, h_b_eq⟩, h_env', h_meta',
+                    h_he, h_env', h_meta',
                     hv_ra, hv_rb⟩
             simp [eval, h_eval_b]
         | seq exps =>
@@ -2402,7 +2630,7 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨h_r, h_s⟩ := h_eval
                 subst h_r; subst h_s
                 refine ⟨.nilV, s_b, ?_, ?_, h_ctx,
-                        HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                        HeapEvolution.refl _ _, h_env, h_meta, trivial, trivial⟩
                 · simp [eval]
                 · intro depth
                   cases depth with | zero => trivial | succ _ => trivial
@@ -2411,11 +2639,11 @@ theorem frame : ∀ n, FrameStmt n := by
                 | nil =>
                     -- exps = [e]: eval (k+1) (.seq [e]) reduces to eval k e
                     simp only [eval] at h_eval
-                    obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he_a, h_he_b,
+                    obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he,
                             h_env', h_meta', hv_ra, hv_rb⟩ :=
                       ih_eval ptable e env_a env_b metaEnv s_a s_b r_a s_a'
-                        h_ctx h_env h_meta h_eval
-                    refine ⟨r_b, s_b', ?_, h_vv, h_ctx', h_he_a, h_he_b, h_env', h_meta',
+                        hresp_pt h_ctx h_env h_meta h_eval
+                    refine ⟨r_b, s_b', ?_, h_vv, h_ctx', h_he, h_env', h_meta',
                             hv_ra, hv_rb⟩
                     simp [eval, h_eval_b]
                 | cons e2 rest2 =>
@@ -2428,18 +2656,17 @@ theorem frame : ∀ n, FrameStmt n := by
                         rw [he] at h_eval
                         simp only at h_eval
                         obtain ⟨v_e_b, s_b_inner, h_eval_e_b, _h_vv_e, h_ctx_inner,
-                                h_he_a_inner, h_he_b_inner, h_env_inner, h_meta_inner,
+                                h_he_inner, h_env_inner, h_meta_inner,
                                 _hv_ve_a, _hv_ve_b⟩ :=
                           ih_eval ptable e env_a env_b metaEnv s_a s_b v_e s_a_inner
-                            h_ctx h_env h_meta he
-                        obtain ⟨r_b, s_b', h_eval_seq_b, h_vv, h_ctx', h_he_a', h_he_b',
+                            hresp_pt h_ctx h_env h_meta he
+                        obtain ⟨r_b, s_b', h_eval_seq_b, h_vv, h_ctx', h_he',
                                 h_env', h_meta', hv_ra, hv_rb⟩ :=
                           ih_eval ptable (.seq (e2 :: rest2)) env_a env_b metaEnv
                             s_a_inner s_b_inner r_a s_a'
-                            h_ctx_inner h_env_inner h_meta_inner h_eval
+                            hresp_pt h_ctx_inner h_env_inner h_meta_inner h_eval
                         refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
-                                HeapExt.trans h_he_a_inner h_he_a',
-                                HeapExt.trans h_he_b_inner h_he_b',
+                                HeapEvolution.trans h_he_inner h_he',
                                 h_env', h_meta', hv_ra, hv_rb⟩
                         simp [eval, h_eval_e_b, h_eval_seq_b]
         | ifte c t e =>
@@ -2449,10 +2676,10 @@ theorem frame : ∀ n, FrameStmt n := by
             | some pr =>
                 obtain ⟨cv_a, s_c_a⟩ := pr
                 rw [hc] at h_eval
-                obtain ⟨cv_b, s_c_b, h_eval_c_b, h_vv_c, h_ctx_c, h_he_c_a, h_he_c_b,
+                obtain ⟨cv_b, s_c_b, h_eval_c_b, h_vv_c, h_ctx_c, h_he_c,
                         h_env_c, h_meta_c, _hv_cva, _hv_cvb⟩ :=
                   ih_eval ptable c env_a env_b metaEnv s_a s_b cv_a s_c_a
-                    h_ctx h_env h_meta hc
+                    hresp_pt h_ctx h_env h_meta hc
                 have h_iff : cv_a = .bool false ↔ cv_b = .bool false :=
                   ValVis_bool_false_iff cv_a cv_b s_c_a.heap s_c_b.heap h_vv_c
                 by_cases hcv : cv_a = .bool false
@@ -2461,13 +2688,12 @@ theorem frame : ∀ n, FrameStmt n := by
                   subst hcv
                   simp only at h_eval
                   -- h_eval : eval k ptable e env_a metaEnv s_c_a = some (r_a, s_a')
-                  obtain ⟨r_b, s_b', h_eval_e_b, h_vv, h_ctx', h_he_a', h_he_b',
+                  obtain ⟨r_b, s_b', h_eval_e_b, h_vv, h_ctx', h_he',
                           h_env', h_meta', hv_ra, hv_rb⟩ :=
                     ih_eval ptable e env_a env_b metaEnv s_c_a s_c_b r_a s_a'
-                      h_ctx_c h_env_c h_meta_c h_eval
+                      hresp_pt h_ctx_c h_env_c h_meta_c h_eval
                   refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
-                          HeapExt.trans h_he_c_a h_he_a',
-                          HeapExt.trans h_he_c_b h_he_b',
+                          HeapEvolution.trans h_he_c h_he',
                           h_env', h_meta', hv_ra, hv_rb⟩
                   simp [eval, h_eval_c_b, h_cv_b, h_eval_e_b]
                 · -- both sides take then-branch
@@ -2486,13 +2712,12 @@ theorem frame : ∀ n, FrameStmt n := by
                     | closure _ _ _    => exact h_eval
                     | prim _           => exact h_eval
                     | builtinBaseApply => exact h_eval
-                  obtain ⟨r_b, s_b', h_eval_t_b, h_vv, h_ctx', h_he_a', h_he_b',
+                  obtain ⟨r_b, s_b', h_eval_t_b, h_vv, h_ctx', h_he',
                           h_env', h_meta', hv_ra, hv_rb⟩ :=
                     ih_eval ptable t env_a env_b metaEnv s_c_a s_c_b r_a s_a'
-                      h_ctx_c h_env_c h_meta_c h_eval_t
+                      hresp_pt h_ctx_c h_env_c h_meta_c h_eval_t
                   refine ⟨r_b, s_b', ?_, h_vv, h_ctx',
-                          HeapExt.trans h_he_c_a h_he_a',
-                          HeapExt.trans h_he_c_b h_he_b',
+                          HeapEvolution.trans h_he_c h_he',
                           h_env', h_meta', hv_ra, hv_rb⟩
                   -- Goal: eval (k+1) (.ifte c t e) env_b metaEnv s_b = some (r_b, s_b')
                   -- Reduces to match eval k c env_b metaEnv s_b with ...
@@ -2524,10 +2749,10 @@ theorem frame : ∀ n, FrameStmt n := by
                     rw [hf] at h_eval
                     simp only at h_eval
                     -- IH on f
-                    obtain ⟨fv_b, s_b_inner, h_eval_f_b, h_vv_f, h_ctx1, h_he_a1, h_he_b1,
+                    obtain ⟨fv_b, s_b_inner, h_eval_f_b, h_vv_f, h_ctx1, h_he1,
                             h_env1, h_meta1, hv_fva, hv_fvb⟩ :=
                       ih_eval ptable f env_a env_b metaEnv s_a s_b fv_a s_a_inner
-                        h_ctx h_env h_meta hf
+                        hresp_pt h_ctx h_env h_meta hf
                     cases ha : evalList k ptable args env_a metaEnv s_a_inner with
                     | none => rw [ha] at h_eval; simp at h_eval
                     | some pr2 =>
@@ -2535,50 +2760,41 @@ theorem frame : ∀ n, FrameStmt n := by
                         rw [ha] at h_eval
                         simp only at h_eval
                         -- IH on args
-                        obtain ⟨avs_b, s_b_inner2, h_eval_args_b, h_lvv, h_ctx2, h_he_a2,
-                                h_he_b2, h_env2, h_meta2, hv_avsa, hv_avsb⟩ :=
+                        obtain ⟨avs_b, s_b_inner2, h_eval_args_b, h_lvv, h_ctx2, h_he2,
+                                h_env2, h_meta2, hv_avsa, hv_avsb⟩ :=
                           ih_evalList ptable args env_a env_b metaEnv s_a_inner s_b_inner
-                            avs_a s_a_inner2 h_ctx1 h_env1 h_meta1 ha
+                            avs_a s_a_inner2 hresp_pt h_ctx1 h_env1 h_meta1 ha
                         -- WFCtx metaEnv metaEnv metaEnv at s_a_inner2 s_b_inner2
                         have h_ctx_meta2 : WFCtx metaEnv metaEnv metaEnv s_a_inner2 s_b_inner2 :=
                           ⟨h_ctx2.state_ext, h_ctx2.hv_a, h_ctx2.hv_b,
-                           h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b⟩
-                        -- Lift ValVis fv_a fv_b across heap extension from inner to inner2
-                        -- via ValVis_extends, using the strengthened ValValid output of ih_eval.
-                        obtain ⟨ext_a2, hex_a2⟩ := h_he_a2
-                        obtain ⟨ext_b2, hex_b2⟩ := h_he_b2
-                        have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap := by
-                          rw [hex_a2, hex_b2]
-                          exact ValVis_extends fv_a fv_b s_a_inner.heap s_b_inner.heap
-                            ext_a2 ext_b2 h_ctx1.hv_a h_ctx1.hv_b hv_fva hv_fvb h_vv_f
-                        -- Lift ValValid fv_a / fv_b across the inner→inner2 extension.
+                           h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b,
+                           h_ctx2.policy_resp⟩
+                        -- Lift ValVis fv_a fv_b across the inner→inner2 evolution.
+                        have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap :=
+                          h_he2.valVis_preserve fv_a fv_b hv_fva hv_fvb h_vv_f
                         have hv_fva2 : ValValid fv_a s_a_inner2.heap :=
-                          ValValid.heap_extends fv_a hv_fva ⟨ext_a2, hex_a2⟩
+                          ValValid.length_mono fv_a hv_fva h_he2.len_a
                         have hv_fvb2 : ValValid fv_b s_b_inner2.heap :=
-                          ValValid.heap_extends fv_b hv_fvb ⟨ext_b2, hex_b2⟩
-                        obtain ⟨r_b, s_b', h_eval_av_b, h_vv, h_ctx3, h_he_a3, h_he_b3,
+                          ValValid.length_mono fv_b hv_fvb h_he2.len_b
+                        obtain ⟨r_b, s_b', h_eval_av_b, h_vv, h_ctx3, h_he3,
                                 h_meta3, hv_ra, hv_rb⟩ :=
                           ih_applyVia ptable fv_a fv_b avs_a avs_b metaEnv
                             s_a_inner2 s_b_inner2 r_a s_a'
-                            h_ctx_meta2 h_vv_f' h_lvv h_meta2
+                            hresp_pt h_ctx_meta2 h_vv_f' h_lvv h_meta2
                             hv_fva2 hv_fvb2 hv_avsa hv_avsb h_eval
-                        have h_he_a_chain : HeapExt s_a s_a' :=
-                          HeapExt.trans h_he_a1 (HeapExt.trans ⟨ext_a2, hex_a2⟩ h_he_a3)
-                        have h_he_b_chain : HeapExt s_b s_b' :=
-                          HeapExt.trans h_he_b1 (HeapExt.trans ⟨ext_b2, hex_b2⟩ h_he_b3)
-                        obtain ⟨ext_a, hex_a⟩ := h_he_a_chain
-                        obtain ⟨ext_b, hex_b⟩ := h_he_b_chain
+                        have h_he_chain : HeapEvolution s_a s_b s_a' s_b' :=
+                          HeapEvolution.trans h_he1 (HeapEvolution.trans h_he2 h_he3)
                         have h_ctx_out : WFCtx env_a env_b metaEnv s_a' s_b' :=
                           ⟨h_ctx3.state_ext, h_ctx3.hv_a, h_ctx3.hv_b,
-                           EnvValid.heap_extends h_ctx.ev_a ⟨ext_a, hex_a⟩,
-                           EnvValid.heap_extends h_ctx.ev_b ⟨ext_b, hex_b⟩,
-                           h_ctx3.em_a, h_ctx3.em_b⟩
-                        have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap := by
-                          rw [hex_a, hex_b]
-                          exact EnvVis_extends env_a env_b s_a.heap s_b.heap ext_a ext_b
-                            h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
+                           h_ctx.ev_a.length_mono h_he_chain.len_a,
+                           h_ctx.ev_b.length_mono h_he_chain.len_b,
+                           h_ctx3.em_a, h_ctx3.em_b,
+                           h_ctx3.policy_resp⟩
+                        have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
+                          h_he_chain.envVis_preserve env_a env_b
+                            h_ctx.ev_a h_ctx.ev_b h_env
                         refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
-                                ⟨ext_a, hex_a⟩, ⟨ext_b, hex_b⟩, h_env_out, h_meta3,
+                                h_he_chain, h_env_out, h_meta3,
                                 hv_ra, hv_rb⟩
                         simp [eval, h_eval_f_b, h_eval_args_b, h_eval_av_b]
         | primApp f args =>
@@ -2590,59 +2806,97 @@ theorem frame : ∀ n, FrameStmt n := by
                 rw [hf] at h_eval
                 simp only at h_eval
                 -- IH on f
-                obtain ⟨fv_b, s_b_inner, h_eval_f_b, h_vv_f, h_ctx1, h_he_a1, h_he_b1,
+                obtain ⟨fv_b, s_b_inner, h_eval_f_b, h_vv_f, h_ctx1, h_he1,
                         h_env1, h_meta1, hv_fva, hv_fvb⟩ :=
                   ih_eval ptable f env_a env_b metaEnv s_a s_b fv_a s_a_inner
-                    h_ctx h_env h_meta hf
+                    hresp_pt h_ctx h_env h_meta hf
                 cases ha : evalList k ptable args env_a metaEnv s_a_inner with
                 | none => rw [ha] at h_eval; simp at h_eval
                 | some pr2 =>
                     obtain ⟨avs_a, s_a_inner2⟩ := pr2
                     rw [ha] at h_eval
                     simp only at h_eval
-                    obtain ⟨avs_b, s_b_inner2, h_eval_args_b, h_lvv, h_ctx2, h_he_a2,
-                            h_he_b2, h_env2, h_meta2, hv_avsa, hv_avsb⟩ :=
+                    obtain ⟨avs_b, s_b_inner2, h_eval_args_b, h_lvv, h_ctx2, h_he2,
+                            h_env2, h_meta2, hv_avsa, hv_avsb⟩ :=
                       ih_evalList ptable args env_a env_b metaEnv s_a_inner s_b_inner
-                        avs_a s_a_inner2 h_ctx1 h_env1 h_meta1 ha
+                        avs_a s_a_inner2 hresp_pt h_ctx1 h_env1 h_meta1 ha
                     have h_ctx_meta2 : WFCtx metaEnv metaEnv metaEnv s_a_inner2 s_b_inner2 :=
                       ⟨h_ctx2.state_ext, h_ctx2.hv_a, h_ctx2.hv_b,
-                       h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b⟩
-                    obtain ⟨ext_a2, hex_a2⟩ := h_he_a2
-                    obtain ⟨ext_b2, hex_b2⟩ := h_he_b2
-                    have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap := by
-                      rw [hex_a2, hex_b2]
-                      exact ValVis_extends fv_a fv_b s_a_inner.heap s_b_inner.heap
-                        ext_a2 ext_b2 h_ctx1.hv_a h_ctx1.hv_b hv_fva hv_fvb h_vv_f
+                       h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b,
+                       h_ctx2.policy_resp⟩
+                    have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap :=
+                      h_he2.valVis_preserve fv_a fv_b hv_fva hv_fvb h_vv_f
                     have hv_fva2 : ValValid fv_a s_a_inner2.heap :=
-                      ValValid.heap_extends fv_a hv_fva ⟨ext_a2, hex_a2⟩
+                      ValValid.length_mono fv_a hv_fva h_he2.len_a
                     have hv_fvb2 : ValValid fv_b s_b_inner2.heap :=
-                      ValValid.heap_extends fv_b hv_fvb ⟨ext_b2, hex_b2⟩
-                    obtain ⟨r_b, s_b', h_eval_av_b, h_vv, h_ctx3, h_he_a3, h_he_b3,
+                      ValValid.length_mono fv_b hv_fvb h_he2.len_b
+                    obtain ⟨r_b, s_b', h_eval_av_b, h_vv, h_ctx3, h_he3,
                             h_meta3, hv_ra, hv_rb⟩ :=
                       ih_applyDirect ptable fv_a fv_b avs_a avs_b metaEnv
                         s_a_inner2 s_b_inner2 r_a s_a'
-                        h_ctx_meta2 h_vv_f' h_lvv h_meta2
+                        hresp_pt h_ctx_meta2 h_vv_f' h_lvv h_meta2
                         hv_fva2 hv_fvb2 hv_avsa hv_avsb h_eval
-                    have h_he_a_chain : HeapExt s_a s_a' :=
-                      HeapExt.trans h_he_a1 (HeapExt.trans ⟨ext_a2, hex_a2⟩ h_he_a3)
-                    have h_he_b_chain : HeapExt s_b s_b' :=
-                      HeapExt.trans h_he_b1 (HeapExt.trans ⟨ext_b2, hex_b2⟩ h_he_b3)
-                    obtain ⟨ext_a, hex_a⟩ := h_he_a_chain
-                    obtain ⟨ext_b, hex_b⟩ := h_he_b_chain
+                    have h_he_chain : HeapEvolution s_a s_b s_a' s_b' :=
+                      HeapEvolution.trans h_he1 (HeapEvolution.trans h_he2 h_he3)
                     have h_ctx_out : WFCtx env_a env_b metaEnv s_a' s_b' :=
                       ⟨h_ctx3.state_ext, h_ctx3.hv_a, h_ctx3.hv_b,
-                       EnvValid.heap_extends h_ctx.ev_a ⟨ext_a, hex_a⟩,
-                       EnvValid.heap_extends h_ctx.ev_b ⟨ext_b, hex_b⟩,
-                       h_ctx3.em_a, h_ctx3.em_b⟩
-                    have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap := by
-                      rw [hex_a, hex_b]
-                      exact EnvVis_extends env_a env_b s_a.heap s_b.heap ext_a ext_b
-                        h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
+                       h_ctx.ev_a.length_mono h_he_chain.len_a,
+                       h_ctx.ev_b.length_mono h_he_chain.len_b,
+                       h_ctx3.em_a, h_ctx3.em_b,
+                       h_ctx3.policy_resp⟩
+                    have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
+                      h_he_chain.envVis_preserve env_a env_b
+                        h_ctx.ev_a h_ctx.ev_b h_env
                     refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
-                            ⟨ext_a, hex_a⟩, ⟨ext_b, hex_b⟩, h_env_out, h_meta3,
+                            h_he_chain, h_env_out, h_meta3,
                             hv_ra, hv_rb⟩
                     simp [eval, h_eval_f_b, h_eval_args_b, h_eval_av_b]
-        | set _ _      => sorry
+        | set _ _      =>
+            -- The `.set x e` case: substantial remaining work.
+            -- The `HeapEvolution` infrastructure plus the `policy_resp`
+            -- field on `WFCtx` give us the framing-across-update
+            -- machinery (`env_preserve` / `val_preserve` for
+            -- `HeapEvolution`, plus the same-decision lemma for the
+            -- gate). What's missing:
+            --
+            --   1. **`ValVis_aux_update` / `EnvVis_aux_update`**: a
+            --      depth-induction proving that bisim is preserved
+            --      across an in-place `Heap.update` whose new values
+            --      are bisim-related on both sides. This is the
+            --      structural analog of `ValVis_aux_extends` but for
+            --      cell-update rather than prefix-extension.
+            --
+            --   2. **`env_lookup_eq`** (cross-side env structural
+            --      equality on lookups): an extra invariant
+            --      `∀ x, env_a.lookup x = env_b.lookup x` to thread
+            --      through `FrameStmt` so `env.lookup x` produces
+            --      the same `idx` on both sides. Without this,
+            --      `isMetaMutation` could differ across sides when
+            --      `env_a` / `env_b` have different lookups for `x`
+            --      and one happens to match `metaEnv.lookup x`. With
+            --      it, the meta vs plain mutation branch matches
+            --      cross-side.
+            --
+            --   3. **`heap_len_eq`** (cross-side heap length
+            --      equality): needed in the `.letE` case so the alloc
+            --      indices match cross-side, preserving
+            --      `env_lookup_eq` after cons-extension.
+            --
+            -- Once (1)-(3) are in place, the four `.set` sub-cases
+            -- close:
+            --   - `env.lookup x = none`: contradicts `h_eval`.
+            --   - Plain mutation (`isMetaMutation = false`): both
+            --     sides update at the same `idx` (from
+            --     `env_lookup_eq`), to bisim-related new values.
+            --     Returns `.bool true` on both. `HeapEvolution`
+            --     follows from `ValVis_aux_update`.
+            --   - Meta mutation, gate accepts: same as above with
+            --     same admit decision via `policy_resp`.
+            --   - Meta mutation, gate rejects: same decision via
+            --     `policy_resp`. Returns `.bool false` on both. State
+            --     unchanged on both sides — `HeapEvolution` is the
+            --     IH's evolution.
+            sorry
         | letE x e body =>
             simp only [eval] at h_eval
             cases he : eval k ptable e env_a metaEnv s_a with
@@ -2651,10 +2905,10 @@ theorem frame : ∀ n, FrameStmt n := by
                 obtain ⟨v_a, s_a_inner⟩ := pr
                 rw [he] at h_eval
                 -- IH on e
-                obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_a_inner,
-                        h_he_b_inner, h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
+                obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_inner,
+                        h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
                   ih_eval ptable e env_a env_b metaEnv s_a s_b v_a s_a_inner
-                    h_ctx h_env h_meta he
+                    hresp_pt h_ctx h_env h_meta he
                 -- After eval e, we alloc v on each side. The let-destructured
                 -- alloc reduces by Heap.alloc def: (h ++ [v], h.length).
                 simp only [Heap.alloc] at h_eval
@@ -2742,7 +2996,8 @@ theorem frame : ∀ n, FrameStmt n := by
                       { s_a_inner with heap := s_a_inner.heap ++ [v_a] }
                       { s_b_inner with heap := s_b_inner.heap ++ [v_b] } :=
                   ⟨h_ctx_inner.state_ext, hh_a_alloc, hh_b_alloc,
-                   hev_a', hev_b', hem_a', hem_b'⟩
+                   hev_a', hev_b', hem_a', hem_b',
+                   h_ctx_inner.policy_resp⟩
                 -- ValVis v_a v_b lifted to alloc heaps.
                 have h_vv_v_alloc :
                     ValVis v_a v_b (s_a_inner.heap ++ [v_a]) (s_b_inner.heap ++ [v_b]) :=
@@ -2770,52 +3025,48 @@ theorem frame : ∀ n, FrameStmt n := by
                     h_ctx_inner.hv_a h_ctx_inner.hv_b h_ctx_inner.em_a h_ctx_inner.em_b
                     h_meta_inner
                 -- Now apply IH on body.
-                obtain ⟨r_b, s_b', h_eval_b_b, h_vv_r, h_ctx_body, h_he_a_body,
-                        h_he_b_body, _h_env_body, h_meta_body, hv_ra, hv_rb⟩ :=
+                obtain ⟨r_b, s_b', h_eval_b_b, h_vv_r, h_ctx_body, h_he_body,
+                        _h_env_body, h_meta_body, hv_ra, hv_rb⟩ :=
                   ih_eval ptable body
                     (.cons x s_a_inner.heap.length env_a)
                     (.cons x s_b_inner.heap.length env_b) metaEnv
                     { s_a_inner with heap := s_a_inner.heap ++ [v_a] }
                     { s_b_inner with heap := s_b_inner.heap ++ [v_b] } r_a s_a'
-                    h_ctx_alloc h_env' h_meta_alloc h_eval
-                -- Build outputs. Heap chains.
-                have h_he_a_alloc :
-                    HeapExt s_a_inner { s_a_inner with heap := s_a_inner.heap ++ [v_a] } :=
-                  ⟨[v_a], rfl⟩
-                have h_he_b_alloc :
-                    HeapExt s_b_inner { s_b_inner with heap := s_b_inner.heap ++ [v_b] } :=
-                  ⟨[v_b], rfl⟩
-                have h_he_a_chain : HeapExt s_a s_a' :=
-                  HeapExt.trans h_he_a_inner (HeapExt.trans h_he_a_alloc h_he_a_body)
-                have h_he_b_chain : HeapExt s_b s_b' :=
-                  HeapExt.trans h_he_b_inner (HeapExt.trans h_he_b_alloc h_he_b_body)
-                obtain ⟨ext_a, hex_a⟩ := h_he_a_chain
-                obtain ⟨ext_b, hex_b⟩ := h_he_b_chain
-                -- WFCtx env_a env_b metaEnv s_a' s_b' (note: env_a, not the cons-ext).
+                    hresp_pt h_ctx_alloc h_env' h_meta_alloc h_eval
+                -- Build the alloc step's HeapEvolution and compose the chain.
+                have h_he_alloc :
+                    HeapEvolution s_a_inner s_b_inner
+                      { s_a_inner with heap := s_a_inner.heap ++ [v_a] }
+                      { s_b_inner with heap := s_b_inner.heap ++ [v_b] } :=
+                  HeapEvolution.from_heapExt h_ctx_inner.hv_a h_ctx_inner.hv_b
+                    ⟨[v_a], rfl⟩ ⟨[v_b], rfl⟩
+                have h_he_chain : HeapEvolution s_a s_b s_a' s_b' :=
+                  HeapEvolution.trans h_he_inner
+                    (HeapEvolution.trans h_he_alloc h_he_body)
                 have h_ctx_out : WFCtx env_a env_b metaEnv s_a' s_b' :=
                   ⟨h_ctx_body.state_ext, h_ctx_body.hv_a, h_ctx_body.hv_b,
-                   EnvValid.heap_extends h_ctx.ev_a ⟨ext_a, hex_a⟩,
-                   EnvValid.heap_extends h_ctx.ev_b ⟨ext_b, hex_b⟩,
-                   h_ctx_body.em_a, h_ctx_body.em_b⟩
-                have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap := by
-                  rw [hex_a, hex_b]
-                  exact EnvVis_extends env_a env_b s_a.heap s_b.heap ext_a ext_b
-                    h_ctx.hv_a h_ctx.hv_b h_ctx.ev_a h_ctx.ev_b h_env
+                   h_ctx.ev_a.length_mono h_he_chain.len_a,
+                   h_ctx.ev_b.length_mono h_he_chain.len_b,
+                   h_ctx_body.em_a, h_ctx_body.em_b,
+                   h_ctx_body.policy_resp⟩
+                have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
+                  h_he_chain.envVis_preserve env_a env_b
+                    h_ctx.ev_a h_ctx.ev_b h_env
                 refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out,
-                        ⟨ext_a, hex_a⟩, ⟨ext_b, hex_b⟩, h_env_out, h_meta_body,
+                        h_he_chain, h_env_out, h_meta_body,
                         hv_ra, hv_rb⟩
                 -- Goal: eval (k+1) (.letE x e body) env_b metaEnv s_b = some (r_b, s_b')
                 simp only [eval, h_eval_e_b, Heap.alloc]
                 exact h_eval_b_b
       · -- evalList (k+1)
-        intro ptable exps env_a env_b metaEnv s_a s_b rs_a s_a' h_ctx h_env h_meta h_eval
+        intro ptable exps env_a env_b metaEnv s_a s_b rs_a s_a' hresp_pt h_ctx h_env h_meta h_eval
         cases exps with
         | nil =>
             simp only [evalList, Option.some.injEq, Prod.mk.injEq] at h_eval
             obtain ⟨h_r, h_s⟩ := h_eval
             subst h_r; subst h_s
             refine ⟨[], s_b, ?_, ?_, h_ctx,
-                    HeapExt.refl _, HeapExt.refl _, h_env, h_meta, trivial, trivial⟩
+                    HeapEvolution.refl _ _, h_env, h_meta, trivial, trivial⟩
             · simp [evalList]
             · trivial
         | cons e rest =>
@@ -2835,51 +3086,44 @@ theorem frame : ∀ n, FrameStmt n := by
                     obtain ⟨h_r, h_s⟩ := h_eval
                     subst h_r; subst h_s
                     -- IH on e
-                    obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_a_inner,
-                            h_he_b_inner, h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
+                    obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_inner,
+                            h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
                       ih_eval ptable e env_a env_b metaEnv s_a s_b v_a s_a_inner
-                        h_ctx h_env h_meta he
+                        hresp_pt h_ctx h_env h_meta he
                     -- IH on rest
                     obtain ⟨vs_b, s_b_inner2, h_eval_rest_b, h_lvv, h_ctx_inner2,
-                            h_he_a_inner2, h_he_b_inner2, h_env_inner2, h_meta_inner2,
+                            h_he_inner2, h_env_inner2, h_meta_inner2,
                             hv_vsa, hv_vsb⟩ :=
                       ih_evalList ptable rest env_a env_b metaEnv s_a_inner s_b_inner
-                        vs_a s_a_inner2 h_ctx_inner h_env_inner h_meta_inner hrest
-                    -- Lift ValVis v_a v_b across rest's heap extension.
-                    obtain ⟨ext_a2, hex_a2⟩ := h_he_a_inner2
-                    obtain ⟨ext_b2, hex_b2⟩ := h_he_b_inner2
-                    have h_vv_v' : ValVis v_a v_b s_a_inner2.heap s_b_inner2.heap := by
-                      rw [hex_a2, hex_b2]
-                      exact ValVis_extends v_a v_b s_a_inner.heap s_b_inner.heap
-                        ext_a2 ext_b2 h_ctx_inner.hv_a h_ctx_inner.hv_b hv_va hv_vb h_vv_v
-                    -- Lift ValValid v_a / v_b.
+                        vs_a s_a_inner2 hresp_pt h_ctx_inner h_env_inner h_meta_inner hrest
+                    -- Lift ValVis v_a v_b and ValValid via HeapEvolution preservation.
+                    have h_vv_v' : ValVis v_a v_b s_a_inner2.heap s_b_inner2.heap :=
+                      h_he_inner2.valVis_preserve v_a v_b hv_va hv_vb h_vv_v
                     have hv_va' : ValValid v_a s_a_inner2.heap :=
-                      ValValid.heap_extends v_a hv_va ⟨ext_a2, hex_a2⟩
+                      ValValid.length_mono v_a hv_va h_he_inner2.len_a
                     have hv_vb' : ValValid v_b s_b_inner2.heap :=
-                      ValValid.heap_extends v_b hv_vb ⟨ext_b2, hex_b2⟩
-                    have h_he_a_chain : HeapExt s_a s_a_inner2 :=
-                      HeapExt.trans h_he_a_inner ⟨ext_a2, hex_a2⟩
-                    have h_he_b_chain : HeapExt s_b s_b_inner2 :=
-                      HeapExt.trans h_he_b_inner ⟨ext_b2, hex_b2⟩
+                      ValValid.length_mono v_b hv_vb h_he_inner2.len_b
+                    have h_he_chain : HeapEvolution s_a s_b s_a_inner2 s_b_inner2 :=
+                      HeapEvolution.trans h_he_inner h_he_inner2
                     refine ⟨v_b :: vs_b, s_b_inner2, ?_,
                             ⟨h_vv_v', h_lvv⟩, h_ctx_inner2,
-                            h_he_a_chain, h_he_b_chain,
+                            h_he_chain,
                             h_env_inner2, h_meta_inner2,
                             ⟨hv_va', hv_vsa⟩, ⟨hv_vb', hv_vsb⟩⟩
                     simp [evalList, h_eval_e_b, h_eval_rest_b]
       · -- applyVia (k+1)
-        intro ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a' h_ctx h_vv_op h_lvv
-              h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
+        intro ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_op
+              h_lvv h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
         simp only [applyVia] at h_eval
         cases hl : metaEnv.lookup "base-apply" with
         | none =>
             rw [hl] at h_eval
             -- both sides go through applyDirect on (op, args) directly
-            obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b', h_meta',
+            obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he', h_meta',
                     hv_ra, hv_rb⟩ :=
               ih_applyDirect ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a'
-                h_ctx h_vv_op h_lvv h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
-            refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b', h_meta', hv_ra, hv_rb⟩
+                hresp_pt h_ctx h_vv_op h_lvv h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
+            refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he', h_meta', hv_ra, hv_rb⟩
             simp [applyVia, hl, h_eval_b]
         | some idx =>
             rw [hl] at h_eval
@@ -2926,12 +3170,12 @@ theorem frame : ∀ n, FrameStmt n := by
                           | prim _ => simp [ValVis_aux] at h_meta_d1
                         subst h_vb
                         simp only at h_eval
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable op_a op_b args_a args_b metaEnv
-                            s_a s_b r_a s_a' h_ctx h_vv_op h_lvv h_meta
+                            s_a s_b r_a s_a' hresp_pt h_ctx h_vv_op h_lvv h_meta
                             hv_opa hv_opb hv_argsa hv_argsb h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | num n =>
@@ -2962,13 +3206,13 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b :
                             ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable (.num n) (.num n)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | bool b =>
@@ -2995,13 +3239,13 @@ theorem frame : ∀ n, FrameStmt n := by
                         have hv_inner_b :
                             ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable (.bool b) (.bool b)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | nilV =>
@@ -3024,13 +3268,13 @@ theorem frame : ∀ n, FrameStmt n := by
                           ⟨hv_opa, ValValid_listToVal hv_argsa, trivial⟩
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable .nilV .nilV
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | sym str =>
@@ -3055,13 +3299,13 @@ theorem frame : ∀ n, FrameStmt n := by
                           ⟨hv_opa, ValValid_listToVal hv_argsa, trivial⟩
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable (.sym str) (.sym str)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | prim str =>
@@ -3086,13 +3330,13 @@ theorem frame : ∀ n, FrameStmt n := by
                           ⟨hv_opa, ValValid_listToVal hv_argsa, trivial⟩
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable (.prim str) (.prim str)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | cons xa ya =>
@@ -3117,13 +3361,13 @@ theorem frame : ∀ n, FrameStmt n := by
                           ⟨hv_opa, ValValid_listToVal hv_argsa, trivial⟩
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable (.cons xa ya) (.cons xb yb)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
                     | closure psa bdya cenva =>
@@ -3147,19 +3391,19 @@ theorem frame : ∀ n, FrameStmt n := by
                           ⟨hv_opa, ValValid_listToVal hv_argsa, trivial⟩
                         have hv_inner_b : ListValValid [op_b, listToVal args_b] s_b.heap :=
                           ⟨hv_opb, ValValid_listToVal hv_argsb, trivial⟩
-                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩ :=
                           ih_applyDirect ptable (.closure psa bdya cenva)
                             (.closure psb bdyb cenvb)
                             [op_a, listToVal args_a] [op_b, listToVal args_b]
-                            metaEnv s_a s_b r_a s_a' h_ctx h_vv_v h_lvv_inner h_meta
+                            metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_v h_lvv_inner h_meta
                             hv_va hv_vb hv_inner_a hv_inner_b h_eval
-                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                        refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                                 h_meta', hv_ra, hv_rb⟩
                         simp [applyVia, hl, hp_b, h_eval_b]
       · -- applyDirect (k+1)
-        intro ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a' h_ctx h_vv_op h_lvv
-              h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
+        intro ptable op_a op_b args_a args_b metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_op
+              h_lvv h_meta hv_opa hv_opb hv_argsa hv_argsb h_eval
         -- Case-analyze on op_a; ValVis_aux 1 forces op_b's constructor to match.
         have h_vv1 : ValVis_aux 1 op_a op_b s_a.heap s_b.heap := h_vv_op 1
         cases op_a with
@@ -3220,12 +3464,12 @@ theorem frame : ∀ n, FrameStmt n := by
                         s_a.heap s_b.heap hl_a h_vv_olist hv_olist_a hv_olist_b
                     obtain ⟨operands_b, hl_b, h_lvv_ops, hv_ops_a, hv_ops_b⟩ := h_vol_b
                     -- Now apply ih_applyDirect on (actualOp, operands).
-                    obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he_a', h_he_b',
+                    obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', h_he',
                             h_meta', hv_ra, hv_rb⟩ :=
                       ih_applyDirect ptable actualOp_a actualOp_b operands_a operands_b
-                        metaEnv s_a s_b r_a s_a' h_ctx h_vv_actual h_lvv_ops h_meta
+                        metaEnv s_a s_b r_a s_a' hresp_pt h_ctx h_vv_actual h_lvv_ops h_meta
                         hv_actual_a hv_actual_b hv_ops_a hv_ops_b h_eval
-                    refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he_a', h_he_b',
+                    refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx', h_he',
                             h_meta', hv_ra, hv_rb⟩
                     simp only [applyDirect, hl_b, h_eval_b]
         | prim name =>
@@ -3256,7 +3500,7 @@ theorem frame : ∀ n, FrameStmt n := by
                   applyPrim_bisim name args_a args_b s_a.heap s_b.heap
                     h_lvv hv_argsa hv_argsb v_a' hp_a
                 refine ⟨r_b, s_b, ?_, h_vv_r, h_ctx,
-                        HeapExt.refl _, HeapExt.refl _, h_meta, hv_ra, hv_rb⟩
+                        HeapEvolution.refl _ _, h_meta, hv_ra, hv_rb⟩
                 simp only [applyDirect, hp_b]
         | closure ps body cenv =>
             -- op_b must also be a .closure with the same ps, body, and a
@@ -3325,9 +3569,10 @@ theorem frame : ∀ n, FrameStmt n := by
                         (s_a.heap, cenv)).1 }
                     { s_b with heap := (args_b.zip ps |>.foldl allocStep
                         (s_b.heap, cenv_b)).1 } :=
-                ⟨h_ctx.state_ext, hh_a', hh_b', hev_a', hev_b', hem_a', hem_b'⟩
+                ⟨h_ctx.state_ext, hh_a', hh_b', hev_a', hev_b', hem_a', hem_b',
+                 h_ctx.policy_resp⟩
               -- Now apply ih_eval on body.
-              obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx_body, h_he_a_body, h_he_b_body,
+              obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx_body, h_he_body,
                       _h_env_body, h_meta_body, hv_ra, hv_rb⟩ :=
                 ih_eval ptable body
                   (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).2
@@ -3336,23 +3581,21 @@ theorem frame : ∀ n, FrameStmt n := by
                   { s_a with heap := (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1 }
                   { s_b with heap := (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 }
                   r_a s_a'
-                  h_ctx_alloc h_env_alloc h_meta_alloc h_eval
-              -- Build heap-extension chain.
-              have h_he_a_alloc : HeapExt s_a
-                  { s_a with heap := (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1 } :=
-                ⟨ext_a, hex_a⟩
-              have h_he_b_alloc : HeapExt s_b
-                  { s_b with heap := (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 } :=
-                ⟨ext_b, hex_b⟩
-              have h_he_a_chain : HeapExt s_a s_a' :=
-                HeapExt.trans h_he_a_alloc h_he_a_body
-              have h_he_b_chain : HeapExt s_b s_b' :=
-                HeapExt.trans h_he_b_alloc h_he_b_body
+                  hresp_pt h_ctx_alloc h_env_alloc h_meta_alloc h_eval
+              -- Build heap-evolution chain (alloc step + body step).
+              have h_he_alloc :
+                  HeapEvolution s_a s_b
+                    { s_a with heap := (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1 }
+                    { s_b with heap := (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 } :=
+                HeapEvolution.from_heapExt h_ctx.hv_a h_ctx.hv_b ⟨ext_a, hex_a⟩ ⟨ext_b, hex_b⟩
+              have h_he_chain : HeapEvolution s_a s_b s_a' s_b' :=
+                HeapEvolution.trans h_he_alloc h_he_body
               -- Output WFCtx for metaEnv-only env (since this is applyDirect framing).
               have h_ctx_out : WFCtx metaEnv metaEnv metaEnv s_a' s_b' :=
                 ⟨h_ctx_body.state_ext, h_ctx_body.hv_a, h_ctx_body.hv_b,
-                 h_ctx_body.em_a, h_ctx_body.em_b, h_ctx_body.em_a, h_ctx_body.em_b⟩
-              refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out, h_he_a_chain, h_he_b_chain,
+                 h_ctx_body.em_a, h_ctx_body.em_b, h_ctx_body.em_a, h_ctx_body.em_b,
+                 h_ctx_body.policy_resp⟩
+              refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out, h_he_chain,
                       h_meta_body, hv_ra, hv_rb⟩
               -- Goal: applyDirect (k+1) ptable (.closure ps body cenv_b) args_b metaEnv s_b
               --       = some (r_b, s_b')
