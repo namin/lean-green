@@ -252,6 +252,74 @@ project: the artifact is already most of the way there
 structurally. What is missing is (a) closing the framing gap,
 (b) defining contextual equivalence, (c) writing the theorems.
 
+## Notes for the prover closing the `.set` sorry
+
+The `.set` case of `frame.eval` is proof obligation (2). Some
+observations that may shorten the search for whoever is working it.
+
+**Why the natural attempt fails.** `multnExactPolicy` admits
+swapping a `.builtinBaseApply` (one `Val` constructor) for a
+`.closure` (a different `Val` constructor). `ValVis_aux` cannot
+relate these by inversion — they have different heads. Any
+strategy that tries to preserve `ValVis` *literally* across the
+`.set` will die on case analysis here. This is the architectural
+fact, not a missing lemma.
+
+**Which architectural option is right for WAND.** Of the three in
+`FUTURE.md` *Generalizing the infrastructure*:
+
+- *Set-free domain restriction.* Already tried and reverted.
+  Useless for WAND anyway: adversarial contexts will use `.set`.
+- *HeapEvolves with a policy-respecting-bisim invariant*
+  (~500 LOC). This is the right one. The invariant the option
+  asks you to add to `WFCtx` — "the heap evolves only by
+  mutations admitted by some CE-sound policy" — is *exactly* the
+  predicate WAND wants to lift to "observational equivalence is
+  preserved under the active policy." The option's auxiliary
+  hypothesis becomes WAND's premise. One development serves
+  both ends; the proof investment pays for itself twice.
+- *Step-indexed logical relation.* Major rewrite. Probably
+  needed eventually if W2 (full βη ⊆ ≃_obs) is pursued at
+  higher type. Not needed for W1 or W3. Punt.
+
+**The bisim invariant to invent is one already in the
+architecture.** The predicate that needs to be threaded through
+`HeapEvolves` is the same shape as `Policy.UnivSoundFor
+ConservativeExt`, lifted to pairs of heaps:
+
+```
+HeapPolicyBisim policy heap_a heap_b ↔
+  ∀ idx old_a old_b new_a new_b,
+    policy ctx_a old_a new_a → policy ctx_b old_b new_b →
+    ValVis old_a old_b heap_a heap_b →
+    ValVis new_a new_b heap_a heap_b
+```
+
+i.e. *the policy admits only modifications that preserve the
+bisimulation*. CE-sound policies satisfy this; it is the
+universal-quantifier closure of the operational lemma already
+proved for `multnExactPolicy`. The work is naming the predicate,
+proving each policy in `verifiedTable` satisfies it (which
+mostly reduces to the soundness theorems already there), and
+threading it through `WFCtx` and the framing cases.
+
+**The `.set` case itself, once the invariant is in scope,
+becomes routine.** Two heaps, both updating the same cell with
+values the policy admits, and the invariant guarantees the new
+values are `ValVis`-related on the post-update heaps. The case
+splits structurally; no new clever insight required past the
+invariant.
+
+**A cheaper near-term route, if the prover is stuck.** Prove a
+restricted version: `frame.eval` for `.set _ _` *under the
+hypothesis that the new value is ValVis-related to the old one
+on both sides*. This is admittedly a hypothesis the runner does
+not currently establish, but it lets the development unblock —
+W1 with the β-redex witness goes through, the WAND demo lands —
+and the obligation to discharge the hypothesis becomes a
+follow-up rather than a blocker. WAND.md as written assumes the
+full closure; this is the escape hatch.
+
 ## References
 
 - M. Wand. *The Theory of Fexprs is Trivial*. Lisp and Symbolic
