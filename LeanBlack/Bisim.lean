@@ -5034,6 +5034,32 @@ theorem ListValDeep.toAllBelow : ∀ {vs : List Val} {h : Heap},
   | _ :: _, _, ⟨hx, hxs⟩ =>
       ⟨ValDeep.toAllBelow hx, ListValDeep.toAllBelow hxs⟩
 
+/-! ## Deep validity is monotone in heap length -/
+
+theorem EnvDeep.length_mono : ∀ {env : Env} {h h' : Heap},
+    EnvDeep env h → h.length ≤ h'.length → EnvDeep env h'
+  | Env.nil,           _, _, _, _   => trivial
+  | Env.cons _ _ rest, _, _, ⟨h_idx, h_rest⟩, h_le =>
+      ⟨Nat.lt_of_lt_of_le h_idx h_le, EnvDeep.length_mono h_rest h_le⟩
+
+theorem ValDeep.length_mono : ∀ {v : Val} {h h' : Heap},
+    ValDeep v h → h.length ≤ h'.length → ValDeep v h'
+  | .num _,            _, _, _,  _   => trivial
+  | .bool _,           _, _, _,  _   => trivial
+  | .nilV,             _, _, _,  _   => trivial
+  | .sym _,            _, _, _,  _   => trivial
+  | .prim _,           _, _, _,  _   => trivial
+  | .builtinBaseApply, _, _, _,  _   => trivial
+  | .cons x y,         _, _, ⟨hx, hy⟩, h_le =>
+      ⟨ValDeep.length_mono hx h_le, ValDeep.length_mono hy h_le⟩
+  | .closure _ _ _,    _, _, hev, h_le => EnvDeep.length_mono hev h_le
+
+theorem ListValDeep.length_mono : ∀ {vs : List Val} {h h' : Heap},
+    ListValDeep vs h → h.length ≤ h'.length → ListValDeep vs h'
+  | [],      _, _, _, _ => trivial
+  | _ :: _, _, _, ⟨hx, hxs⟩, h_le =>
+      ⟨ValDeep.length_mono hx h_le, ListValDeep.length_mono hxs h_le⟩
+
 /-- Closed values are vacuously `AllBelow` at any cutoff: no closures
     means no embedded indices. -/
 theorem closedValB_AllBelow (cutoff : Nat) :
@@ -7303,8 +7329,12 @@ theorem applyDirect_heap_extend_via_shift
     shift-respecting proofs (analogous to existing
     `multnExactPolicy_respects_bisim`).
 
-    These six atomic sorries replace the ten sorries previously in
-    `prefix_ext` (now deleted). -/
+    Now takes Deep-validity (`HeapDeep`/`ValDeep`/`ListValDeep`/`EnvDeep`)
+    and `PolicyRespectsShift` hypotheses as additional preconditions —
+    callers provide them. Both hold for runtime-built data: Deep
+    validity is a runtime invariant (alloc-only growth + Deep `.set`
+    writes), and `PolicyRespectsShift` is provable per verified policy
+    (analogous to existing `multnExactPolicy_respects_bisim`). -/
 theorem applyDirect_heap_extend_weak
     {fuel : Nat} {ptable : PolicyTable} {op : Val} {operands : List Val}
     {metaEnv : Env} {s : RunState}
@@ -7315,25 +7345,19 @@ theorem applyDirect_heap_extend_weak
     (hresp_init : PolicyRespectsBisim s.policy)
     {r : Val} {s' : RunState}
     (h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s'))
-    (extras : List Val) (h_extras : ListValValid extras s.heap) :
+    (extras : List Val) (h_extras : ListValValid extras s.heap)
+    (h_heap_deep : HeapDeep s.heap) (h_op_deep : ValDeep op s.heap)
+    (h_operands_deep : ListValDeep operands s.heap)
+    (h_meta_deep : EnvDeep metaEnv s.heap)
+    (h_pt_shift : PolicyTableRespectsShift s.heap.length extras ptable)
+    (h_pol_shift : PolicyRespectsShift s.heap.length extras s.policy) :
     ∃ r' s'',
       applyDirect fuel ptable op operands metaEnv
         { heap := s.heap ++ extras, policy := s.policy } = some (r', s'') ∧
       ValVis_weak r r' s'.heap s''.heap ∧
       HeapValid s''.heap ∧
       s'.policy = s''.policy ∧
-      s.heap.length + extras.length ≤ s''.heap.length := by
-  -- Deep-validity bridge sorries: hold for runtime-built heaps but
-  -- require a separate `eval_preserves_deep_validity` joint induction
-  -- (or strengthening of `RuntimeWF` to carry Deep fields).
-  have h_heap_deep : HeapDeep s.heap := by sorry
-  have h_op_deep : ValDeep op s.heap := by sorry
-  have h_operands_deep : ListValDeep operands s.heap := by sorry
-  have h_meta_deep : EnvDeep metaEnv s.heap := by sorry
-  -- Policy shift-respect sorries: hold for verified policies; analogous
-  -- to `multnExactPolicy_respects_bisim` proofs but for shift-renaming.
-  have h_pt_shift : PolicyTableRespectsShift s.heap.length extras ptable := by sorry
-  have h_pol_shift : PolicyRespectsShift s.heap.length extras s.policy := by sorry
-  exact applyDirect_heap_extend_via_shift hresp_pt h_heap h_op h_operands h_meta
+      s.heap.length + extras.length ≤ s''.heap.length :=
+  applyDirect_heap_extend_via_shift hresp_pt h_heap h_op h_operands h_meta
     hresp_init extras h_extras h_heap_deep h_op_deep h_operands_deep h_meta_deep
     h_pt_shift h_pol_shift h_app

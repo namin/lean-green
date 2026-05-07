@@ -767,10 +767,24 @@ theorem multnExact_CE_nonnum_case
   -- `(s, s_alloc)` framing (which couldn't satisfy `WFCtx.heap_len_eq`)
   -- with a single-side lift, using the *weak* bisim relation that
   -- handles the cenv-shift inherent to fresh allocations.
+  -- Deep-validity hypotheses for the shift-based prefix extension.
+  -- Hold for runtime-built heaps (alloc-only growth + Deep-write `.set`).
+  have h_heap_deep : HeapDeep s.heap := by sorry
+  have h_op_deep : ValDeep op s.heap := by sorry
+  have h_operands_deep : ListValDeep operands s.heap := by sorry
+  have h_meta_deep : EnvDeep metaEnv s.heap := by sorry
+  -- PolicyRespectsShift hypotheses. Provable per verified policy
+  -- (analogous to existing `multnExactPolicy_respects_bisim`).
+  have h_pt_shift : PolicyTableRespectsShift s.heap.length [op, listToVal operands] ptable := by
+    sorry
+  have h_pol_shift : PolicyRespectsShift s.heap.length [op, listToVal operands] s.policy := by
+    sorry
   obtain ⟨r_b, s_b', h_app_b, h_vv_r, h_heap_valid, h_state_eq, h_heap_mono⟩ :=
     applyDirect_heap_extend_weak hresp_pt h_heap hv_op hv_operands
       h_meta_valid hresp_init h_app
       [op, listToVal operands] h_extras_valid
+      h_heap_deep h_op_deep h_operands_deep h_meta_deep
+      h_pt_shift h_pol_shift
   -- Combine: h_trace gives the outer-call = inner-applyDirect equality, and
   -- h_app_b gives the inner-applyDirect = some result on the prefix-extended state.
   refine ⟨fuel + 4, s_b', r_b, ?_, h_vv_r, h_state_eq, h_heap_valid, ?_⟩
