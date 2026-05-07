@@ -188,22 +188,20 @@ theorem numGuard_sound_for_shape :
 
     - `ctx.target = "base-apply"` (only `base-apply` mutations are
       admitted; mutating `"+"` etc. is refused even if shape matches).
-    - the closure's captured `orig` cell holds `.builtinBaseApply`
-      (so post-install `(orig op args)` dispatches to the builtin).
-      **For first install only.** Multi-install — where the captured
-      `orig` is the *previous* multn closure rather than
-      `.builtinBaseApply` — needs a more general `Val.beq`-based
-      runtime check (see GOTCHAS / FUTURE / multi-install).
+    - the closure's captured `orig` cell holds *the current
+      `oldVal`* — i.e., whatever value is at `base-apply` at install
+      time. For first install: `.builtinBaseApply`. For multi-install:
+      the previous multn closure. The check uses `Val.beq` (defined
+      mutually in `Black.lean`); the lemma `val_beq_eq` lifts it to
+      a propositional equality the bridge lemma uses.
     - the closure's captured `num?` cell holds `.prim "num?"`
       (so the body's cond evaluation can resolve).
 
-    These checks correspond exactly to the `InstallFacts
-    .builtinBaseApply new ctx.heap` predicate (the special case
-    `oldVal = .builtinBaseApply` of the parameterized
-    `InstallFacts`); the bridge lemma
-    `multnExactPolicy_implies_InstallFacts` below witnesses this. -/
+    These checks correspond exactly to `InstallFacts oldVal new
+    ctx.heap`; the bridge lemma `multnExactPolicy_implies_InstallFacts`
+    below witnesses this for any `oldVal`. -/
 
-def multnExactPolicy : BlackPolicy := fun ctx _old new =>
+def multnExactPolicy : BlackPolicy := fun ctx oldVal new =>
   -- Target restriction.
   (ctx.target == "base-apply") &&
   -- Structural shape + install-protocol checks.
@@ -214,11 +212,11 @@ def multnExactPolicy : BlackPolicy := fun ctx _old new =>
               (.primApp (.var "orig") [.var "op", .var "args"]))
        cenv =>
        -- OrigBoundIn check: cenv binds "orig" to a heap cell
-       -- holding .builtinBaseApply (first-install case).
+       -- whose value equals oldVal (the current base-apply).
        (match cenv.lookup "orig" with
         | some idx_o =>
             match ctx.heap[idx_o]? with
-            | some .builtinBaseApply => true
+            | some v => v == oldVal
             | _ => false
         | none => false) &&
        -- NumQBoundIn check: cenv binds "num?" to a heap cell
@@ -287,23 +285,23 @@ structure InstallFacts (oldVal new : Val) (heap : Heap) : Prop where
 
 /-- **Bridge lemma**: the runtime gate's admission *implies* the
     structural install-protocol facts. When `multnExactPolicy ctx
-    old new = true`, we know:
+    oldVal new = true`, we know:
 
     1. `ctx.target = "base-apply"` (target restriction).
     2. `new` is multn-shaped, its captured `orig` cell holds
-       `.builtinBaseApply` (first-install case), and its captured
-       `num?` cell holds `.prim "num?"`.
+       `oldVal`, and its captured `num?` cell holds `.prim "num?"`.
 
-    Together this gives `InstallFacts .builtinBaseApply new ctx.heap`
-    — the install-protocol obligation on
-    `multnExact_soundForCE_first_install` that the runtime gate
-    now discharges directly. -/
+    Together this gives `InstallFacts oldVal new ctx.heap` — the
+    install-protocol obligation on `multnExact_soundForCE_install`
+    that the runtime gate now discharges directly, *for any `oldVal`*.
+    The first-install case instantiates `oldVal = .builtinBaseApply`;
+    multi-install instantiates `oldVal = previous multn closure`. -/
 theorem multnExactPolicy_implies_InstallFacts
-    {ctx : MutationCtx} {old new : Val}
-    (h : multnExactPolicy ctx old new = true) :
-    ctx.target = "base-apply" ∧ InstallFacts .builtinBaseApply new ctx.heap := by
+    {ctx : MutationCtx} {oldVal new : Val}
+    (h : multnExactPolicy ctx oldVal new = true) :
+    ctx.target = "base-apply" ∧ InstallFacts oldVal new ctx.heap := by
   have shape : MultnExactShape new :=
-    multnExact_sound_for_shape ctx old new h
+    multnExact_sound_for_shape ctx oldVal new h
   obtain ⟨t, cenv, h_new_eq⟩ := shape
   subst h_new_eq
   unfold multnExactPolicy at h
@@ -311,7 +309,7 @@ theorem multnExactPolicy_implies_InstallFacts
   obtain ⟨h_tgt, h_orig, h_numq⟩ := h
   have orig_facts :
       ∃ idx_o, cenv.lookup "orig" = some idx_o ∧
-               ctx.heap[idx_o]? = some .builtinBaseApply := by
+               ctx.heap[idx_o]? = some oldVal := by
     cases h_lookup : cenv.lookup "orig" with
     | none => simp [h_lookup] at h_orig
     | some idx_o =>
@@ -320,15 +318,10 @@ theorem multnExactPolicy_implies_InstallFacts
         | none => simp [h_heap] at h_orig
         | some v =>
             simp only [h_heap] at h_orig
-            cases v with
-            | builtinBaseApply => exact ⟨idx_o, rfl, h_heap⟩
-            | num _ => simp at h_orig
-            | bool _ => simp at h_orig
-            | nilV => simp at h_orig
-            | sym _ => simp at h_orig
-            | cons _ _ => simp at h_orig
-            | prim _ => simp at h_orig
-            | closure _ _ _ => simp at h_orig
+            -- h_orig : (v == oldVal) = true. Lift to v = oldVal via val_beq_eq.
+            have h_eq : v = oldVal := val_beq_eq v oldVal h_orig
+            subst h_eq
+            exact ⟨idx_o, rfl, h_heap⟩
   have numq_facts :
       ∃ idx_n, cenv.lookup "num?" = some idx_n ∧
                ctx.heap[idx_n]? = some (.prim "num?") := by

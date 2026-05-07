@@ -179,6 +179,29 @@ def installMultnAtPlus : Expr :=
     .letE "orig" (.var "base-apply") <|
       .set "+" multnWrapper
 
+/-- Adversarial #5 — multi-install. The runtime gate is now
+    `oldVal`-parametric: the captured `orig` cell must hold
+    *whatever value is currently at `base-apply`*, not specifically
+    `.builtinBaseApply`. So a *second* install — where the captured
+    `orig` is the first install's multn closure — should admit too.
+
+    First install: M₁ with orig = .builtinBaseApply. Admitted (canonical).
+    Second install: M₂ with orig = M₁ (the let snapshots the
+    current base-apply, which is M₁). `multnExactPolicy` checks
+    `Val.beq <heap[idx_o]> <oldVal=M₁>` and admits.
+
+    Witness: after the chain, `(2 3 4) ⇒ 24` — multn behavior
+    survives. (Both installs use `multnWrapper`, so the chain
+    is functionally idempotent.) -/
+def test_strict_multi_install : Option Val :=
+  evalProgram fuel verifiedTable <|
+    .seq [
+      .installPolicy Policy.idx_multnExact,
+      installMultn,                                  -- install M₁
+      installMultn,                                  -- install M₂; orig = M₁
+      .app [.num 2, .num 3, .num 4]                  -- still 24
+    ]
+
 /-- Witness: under `multnExactPolicy`, the canonical multn install
     is admitted and `(2 3 4) ⇒ 24`. -/
 def test_strict_admits_multn : Option Val :=
@@ -322,6 +345,9 @@ def main : IO Unit := do
   reportPair "wrong target (`+` not `base-apply`) refused"
                                         test_strict_refuses_wrong_target
                                         (some (.bool false, .num 3))
+  reportLine "multi-install (M₂ ∘ M₁): both admitted, multn preserved"
+                                        test_strict_multi_install
+                                        (some (.num 24))
   let n ← failureCount.get
   if n > 0 then
     IO.println s!"\n{n} failure(s)."

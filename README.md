@@ -107,24 +107,36 @@ Two concessions worth flagging up-front:
 
 0. **The runner enforces the verified theorem's preconditions.**
    As of the runner-vs-theorem hardening (`FUTURE.md` /
-   *Hardening the proposal-to-admission seam* items 1, 3, 4, 6):
+   *Hardening the proposal-to-admission seam* items 1, 2, 3, 4, 6):
 
    - `BlackPolicy` is `MutationCtx → Val → Val → Bool` — the gate
      sees target name, heap, env, metaEnv, and index.
-   - `multnExactPolicy` checks `target = "base-apply"`,
-     `OrigBoundIn`, and `NumQBoundIn` at runtime against
-     `ctx.heap`.
+   - `multnExactPolicy` is `oldVal`-parametric: it checks
+     `target = "base-apply"`, the strict multn shape, and that
+     the captured `orig` cell holds *the current `base-apply`*
+     (whatever it is — `.builtinBaseApply` for first install, the
+     previous multn closure for subsequent installs). The
+     mutual `Val.beq`/`Expr.beq`/`Env.beq` machinery in
+     `Black.lean` and the lemma `val_beq_eq` lift the runtime
+     `Bool` admission to the propositional equality the bridge
+     lemma needs.
    - The bridge lemma `multnExactPolicy_implies_InstallFacts`
-     proves that runtime admission discharges exactly the
-     install-protocol facts the headline theorem requires.
+     proves that runtime admission discharges
+     `InstallFacts oldVal new ctx.heap` for *any* `oldVal`,
+     making the runtime gate multi-install ready.
    - The `.set` clause freezes `s.policy` before evaluating the
      RHS, closing the TOCTOU `installPolicy`-mid-RHS downgrade
      attack.
+   - `Elab.lean`'s wrapper enforces a syntactic restriction:
+     proposals must be exactly `.lam ["op", "args"] body`. RHS
+     preludes, nested `.em`, and `.set`-ful sequences are
+     rejected at the elaboration layer (defense-in-depth).
    - The active runner policy in `Elab.lean` / `Runner.lean` is
      `multnExactPolicy` (`idx_multnExact = 2`).
-   - Adversarial smoke tests (scene 3 of `Smoke.lean`) exercise
-     all of this end-to-end — shadowed-`orig`, wrong target,
-     `numGuard`-shaped malicious, TOCTOU downgrade all refused.
+   - Adversarial smoke tests (scene 3 of `Smoke.lean`, 8 cases)
+     exercise all of this end-to-end — shadowed-`orig`, wrong
+     target, `numGuard`-shaped malicious, TOCTOU downgrade,
+     multi-install all behave as expected.
 
    The runner's "ADMITTED" verdict now means: the runtime gate
    verified the install-protocol facts that the headline
@@ -132,8 +144,9 @@ Two concessions worth flagging up-front:
 
    *What's left:* the elaboration path (`Elab.lean` /
    `lake env lean --run`) is still not a security boundary —
-   the LLM can emit Lean elaboration-time effects. See
-   `GOTCHAS.md` #17 and `FUTURE.md` / *Hardening seam* / item 7.
+   the LLM can emit Lean elaboration-time effects that aren't
+   caught by the syntactic check. See `GOTCHAS.md` #17 and
+   `FUTURE.md` / *Hardening seam* / item 7.
 
 1. **`eval`'s `.quote v` is restricted to "closed" values.** `eval`
    checks `closedValB v` at the `.quote v` case and returns `none`

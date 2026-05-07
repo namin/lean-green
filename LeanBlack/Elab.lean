@@ -69,11 +69,30 @@ structure Config where
 
 def defaultConfig : Config := {}
 
+/-- Syntactic check on the LLM's proposal. Defense-in-depth at the
+    elaboration layer: even though `multnExactPolicy` would catch
+    semantic violations like a shadowed `orig` via runtime
+    `OrigBoundIn`, requiring a syntactic `.lam ["op", "args"] body`
+    rules out classes of attack that don't even get to the
+    runtime gate (RHS preludes with `.set`, nested `.em`, etc.).
+
+    Accepts iff the proposal is *exactly* `.lam ["op", "args"] body`
+    for some body. -/
+private def isWellFormedProposal : Expr → Bool
+  | .lam ["op", "args"] _ => true
+  | _                     => false
+
 private def buildWrapper (proposalSrc : String) : String :=
   s!"import LeanBlack
 
 def proposalExpr : Expr :=
 {proposalSrc}
+
+/-- Syntactic restriction on the proposal: must be exactly
+    `.lam [\"op\", \"args\"] body` for some body. -/
+def isWellFormedProposal : Expr → Bool
+  | .lam [\"op\", \"args\"] _ => true
+  | _                     => false
 
 def runTest : Expr :=
   .seq [
@@ -86,6 +105,9 @@ def runTest : Expr :=
   ]
 
 def main : IO Unit := do
+  if !isWellFormedProposal proposalExpr then
+    IO.println \"REJECTED-MALFORMED\"
+    return
   match evalProgram 100000 verifiedTable runTest with
   | none => IO.println \"ELAB-EVAL-FAILED\"
   | some (.cons (.bool false) _) => IO.println \"REJECTED\"
@@ -109,6 +131,8 @@ def checkProposal (cfg : Config) (proposalSrc : String) : IO Result := do
   if !ok then return .elabError (stdout ++ stderr).trim
   let lastLine := (stdout.trim.splitOn "\n").getLast?.getD ""
   if lastLine == "REJECTED" then return .rejected
+  if lastLine == "REJECTED-MALFORMED" then
+    return .elabError "proposal is not exactly `.lam [\"op\", \"args\"] body`"
   if lastLine.startsWith "ADMITTED-RESULT " then
     return .admitted (some (lastLine.drop "ADMITTED-RESULT ".length))
   if lastLine == "ELAB-EVAL-FAILED" then

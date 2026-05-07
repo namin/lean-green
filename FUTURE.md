@@ -33,26 +33,23 @@ post-`.set` but don't authorize the current `.set`. Tested in
 `Smoke.lean` scene 3 (`test_strict_freeze_admits_install`,
 `test_strict_freeze_post_install_locked`). See `GOTCHAS.md` #1.
 
-### 2. Restrict admissible proposals to direct `.lam` syntax
+### 2. ✅ DONE — Restrict admissible proposals to direct `.lam` syntax
 
-The trusted installer should accept only
+`Elab.lean`'s wrapper now syntactically checks the proposal:
 
+```lean
+def isWellFormedProposal : Expr → Bool
+  | .lam ["op", "args"] _ => true
+  | _                     => false
 ```
-.lam ["op", "args"] body
-```
 
-— not arbitrary `Expr` that happens to evaluate to a closure.
-With item 3 landed, the runtime's `multnExactPolicy` *already*
-catches the shadowed-`orig` attack via the `OrigBoundIn` check,
-so the practical risk is reduced. But syntactic restriction at
-the elaboration layer is still a defense-in-depth win, and it
-rules out `.set`-ful preludes in the RHS that item 1 doesn't
-address.
-
-Concretely: replace the LLM's "any Black `Expr`" interface with
-a "Lean-checked `body` expression" interface; the installer
-wraps it in `.lam` against the trusted Black runtime's `cenv`
-(which actually holds `base-apply` = the previous gate).
+Anything other than exactly `.lam ["op", "args"] body` is
+rejected before the install. This rules out `.set`-ful preludes,
+nested `.em`, `seq`-with-installPolicy, and other classes of
+attack that operate at the elaboration layer (rather than via
+the runtime gate). The runtime gate's `OrigBoundIn` check
+catches semantic violations; the syntactic check catches
+structural ones. Defense-in-depth — both layers active.
 
 ### 3. ✅ DONE — Extend `BlackPolicy` to take a `MutationCtx`
 
@@ -152,56 +149,49 @@ the parser/AST route is built.
 
 ## Extending the verified story
 
-### Multi-install soundness (foundation laid, full proof pending)
+### Multi-install soundness (runtime done, proof partial)
 
-`multnExact_soundForCE_first_install` covers exactly *one*
-admission from a clean state. A real reflective interpreter
-admits a sequence of modifications. The generalization is a
-chain-CE theorem:
-
-```
-multnExact_soundForCE_seq :
-  -- given a chain of admitted installs and the resulting state,
-  -- the post-chain `callAsBaseApply` CE-extends the pre-chain one
-  ...
-```
-
-The hard part is *not* the framing (each individual install's
-post-call is set-free, so `frame.applyDirect` applies). It is
-keeping the install-protocol invariants — `OrigBoundIn`,
-`NumQBoundIn` — inductive across the chain.
+A real reflective interpreter admits a sequence of modifications,
+not just one. Generalizing single-install CE soundness to a
+chain-CE theorem is partway done.
 
 **What's already in place** (committed):
-- `InstallFacts` is *parameterized by `oldVal`*: it's
-  `InstallFacts (oldVal new : Val) (heap : Heap)`, so each link
-  in the chain has its own `OrigBoundIn` predicate. The first-
-  install theorem instantiates `oldVal = .builtinBaseApply`.
-- `Val.beq` / `Expr.beq` / `Env.beq` (mutual structural Bool
-  equality) and the `BEq Val` instance — what a multi-install-
-  ready runtime gate would need to compare the captured `orig`
-  cell to the current `oldVal` (whatever that is at install
-  time, not just `.builtinBaseApply`).
+- **Runtime gate is multi-install ready.** `multnExactPolicy` is
+  `oldVal`-parametric: it admits a multn-shape closure whose
+  captured `orig` cell holds *whatever value is currently at
+  `base-apply`*, not specifically `.builtinBaseApply`. First
+  install: `oldVal = .builtinBaseApply`. Second install:
+  `oldVal = M₁` (the first install's closure). The `Val.beq`
+  / `Expr.beq` / `Env.beq` mutual structural equality machinery
+  in `Black.lean` powers this, and `val_beq_eq` lifts it to a
+  propositional equality the bridge lemma uses.
+- **Bridge lemma is parametric.** `multnExactPolicy_implies_InstallFacts`
+  produces `InstallFacts oldVal new ctx.heap` for any `oldVal`,
+  not just the first-install case.
+- **Smoke verifies multi-install end-to-end.** Scene 3's
+  `multi-install (M₂ ∘ M₁)` test runs two consecutive installs
+  under `multnExactPolicy` and confirms `(2 3 4) ⇒ 24` survives
+  the chain.
 
-**What remains:**
-- A `val_beq_eq` lemma (`Val.beq a b = true → a = b`), proved by
-  mutual induction on Val/Expr/Env. ~100 LOC of case-bash; no
-  proof difficulty, just verbosity.
-- Generalize `multnExactPolicy`'s runtime check from
-  hardcoded-`.builtinBaseApply` to `oldVal`-parametric (using
-  `Val.beq`).
-- Generalize the bridge lemma to produce
-  `InstallFacts oldVal new ctx.heap`.
-- Prove `CE.refl` and `CE.trans` — both need ValVis
+**What remains** (the proof side):
+- The headline `multnExact_soundForCE_first_install` theorem
+  still hardcodes `oldVal = .builtinBaseApply` in the call shape:
+  the `callAsBaseApply ... .builtinBaseApply ... = some (r, s')`
+  hypothesis assumes the old call goes through the builtin
+  dispatcher. For chain CE, the old call could go through a
+  closure (the previous multn). Generalizing the proof requires
+  handling the closure-dispatch path through `applyDirect baseApply
+  [op, listToVal operands]`.
+- `CE.refl` and `CE.trans` — both need ValVis
   reflexivity/transitivity lemmas that aren't currently
-  available. These are likely the substantive proof work,
-  ~200 LOC.
+  available. These are the substantive proof work, ~200 LOC.
 - Compose the chain theorem: each install proves CE between the
   new closure and the previous; chain transitivity gives CE back
-  to `.builtinBaseApply`. ~50 LOC once the lemmas above are
-  in place.
+  to `.builtinBaseApply`. ~50 LOC once the lemmas above are in
+  place.
 
-Total remaining effort: ~400 LOC, mostly mechanical, plus the
-ValVis transitivity work which has some real proof structure.
+Total remaining effort: ~250 LOC of proof work (the runtime
+side is complete).
 
 ### CE-soundness for `numGuardPolicy`
 
