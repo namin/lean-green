@@ -24,9 +24,12 @@ See [`DESIGN.md`](DESIGN.md) for the full design.
 
 3. **LLM-driven proposer.** A Bedrock-mediated cascade where Claude
    proposes Black-source modifications, which are elaborated and
-   admitted (or refused) under the active policy. The kernel
-   discipline is real: the LLM cannot bypass the gate, the gate
-   cannot generate proposals.
+   admitted (or refused) under the active runtime policy. The
+   *runtime kernel* discipline is real: at the operational layer,
+   admitted proposals are gated by the verified policy and the LLM
+   cannot bypass that gate. The *elaboration cascade* is
+   demonstration scaffolding, not a security boundary — see
+   *Known limitations* below.
 
 ## What's verified
 
