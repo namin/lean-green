@@ -739,11 +739,13 @@ end
 structure HeapEvolution (s_a s_b s_a' s_b' : RunState) : Prop where
   len_a : s_a.heap.length ≤ s_a'.heap.length
   len_b : s_b.heap.length ≤ s_b'.heap.length
-  /-- For every depth `n` and every pair of envs that were valid in
-      the source state pair and bisim-related at depth `n`, the same
-      envs remain bisim-related in the target state pair at the same
-      depth. -/
+  /-- For every depth `n` and every pair of envs that are
+      structurally equal cross-side and bisim-related at depth `n`
+      in the source state pair, the same envs remain bisim-related
+      in the target state pair. The `env_a = env_b` precondition is
+      satisfied at every framing call site by `WFCtx.env_eq`. -/
   env_preserve : ∀ (n : Nat) (env_a env_b : Env),
+    env_a = env_b →
     EnvValid env_a s_a.heap → EnvValid env_b s_b.heap →
     EnvVis_aux n env_a env_b s_a.heap s_b.heap →
     EnvVis_aux n env_a env_b s_a'.heap s_b'.heap
@@ -760,7 +762,7 @@ structure HeapEvolution (s_a s_b s_a' s_b' : RunState) : Prop where
 theorem HeapEvolution.refl (s_a s_b : RunState) :
     HeapEvolution s_a s_b s_a s_b :=
   ⟨Nat.le_refl _, Nat.le_refl _,
-   fun _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩
+   fun _ _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩
 
 /-- Lift a single-value bisim across `HeapEvolution` (universal-depth). -/
 theorem HeapEvolution.valVis_preserve {s_a s_b s_a' s_b' : RunState}
@@ -774,11 +776,12 @@ theorem HeapEvolution.valVis_preserve {s_a s_b s_a' s_b' : RunState}
 /-- Lift an env bisim across `HeapEvolution` (universal-depth). -/
 theorem HeapEvolution.envVis_preserve {s_a s_b s_a' s_b' : RunState}
     (h : HeapEvolution s_a s_b s_a' s_b') (env_a env_b : Env)
+    (h_env_eq : env_a = env_b)
     (hv_a : EnvValid env_a s_a.heap) (hv_b : EnvValid env_b s_b.heap)
     (h_vis : EnvVis env_a env_b s_a.heap s_b.heap) :
     EnvVis env_a env_b s_a'.heap s_b'.heap := by
   intro n
-  exact h.env_preserve n env_a env_b hv_a hv_b (h_vis n)
+  exact h.env_preserve n env_a env_b h_env_eq hv_a hv_b (h_vis n)
 
 /-- Validity is preserved under length-monotone evolution. -/
 theorem EnvValid.length_mono {env : Env} {h_a h_b : Heap}
@@ -810,12 +813,12 @@ theorem HeapEvolution.trans {s_a s_b s_a' s_b' s_a'' s_b'' : RunState}
   refine ⟨?_, ?_, ?_, ?_⟩
   · exact Nat.le_trans h1.len_a h2.len_a
   · exact Nat.le_trans h1.len_b h2.len_b
-  · intro n env_a env_b hv_a hv_b h_vis
+  · intro n env_a env_b h_eq hv_a hv_b h_vis
     have h_vis' : EnvVis_aux n env_a env_b s_a'.heap s_b'.heap :=
-      h1.env_preserve n env_a env_b hv_a hv_b h_vis
+      h1.env_preserve n env_a env_b h_eq hv_a hv_b h_vis
     have hv_a' : EnvValid env_a s_a'.heap := hv_a.length_mono h1.len_a
     have hv_b' : EnvValid env_b s_b'.heap := hv_b.length_mono h1.len_b
-    exact h2.env_preserve n env_a env_b hv_a' hv_b' h_vis'
+    exact h2.env_preserve n env_a env_b h_eq hv_a' hv_b' h_vis'
   · intro n v_a v_b hv_a hv_b h_vis
     have h_vis' : ValVis_aux n v_a v_b s_a'.heap s_b'.heap :=
       h1.val_preserve n v_a v_b hv_a hv_b h_vis
@@ -835,7 +838,7 @@ theorem HeapEvolution.from_heapExt {s_a s_b s_a' s_b' : RunState}
   refine ⟨?_, ?_, ?_, ?_⟩
   · rw [hex_a, List.length_append]; exact Nat.le_add_right _ _
   · rw [hex_b, List.length_append]; exact Nat.le_add_right _ _
-  · intro n env_a env_b hv_a hv_b h_vis
+  · intro n env_a env_b _ hv_a hv_b h_vis
     rw [hex_a, hex_b]
     exact EnvVis_aux_extends n env_a env_b s_a.heap s_b.heap ext_a ext_b
       hh_a hh_b hv_a hv_b h_vis
@@ -2803,7 +2806,7 @@ theorem frame : ∀ n, FrameStmt n := by
                          hresp_pt idx newPolicy hp,
                          h_ctx.env_eq, h_ctx.heap_len_eq⟩,
                         ⟨Nat.le_refl _, Nat.le_refl _,
-                         fun _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩,
+                         fun _ _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩,
                         h_env, h_meta, trivial, trivial⟩
                 · simp [eval, hp]
                 · intro depth
@@ -2823,7 +2826,7 @@ theorem frame : ∀ n, FrameStmt n := by
             -- HeapEvolution's env_preserve property.
             have h_env' : EnvVis env_a env_b s_a'.heap s_b'.heap := by
               intro n
-              exact h_he.env_preserve n env_a env_b
+              exact h_he.env_preserve n env_a env_b h_ctx.env_eq
                 h_ctx.ev_a h_ctx.ev_b (h_env n)
             -- Lift env validity via length monotonicity.
             have h_ctx_out : WFCtx env_a env_b metaEnv s_a' s_b' :=
@@ -3004,7 +3007,7 @@ theorem frame : ∀ n, FrameStmt n := by
                            h_ctx3.em_a, h_ctx3.em_b,
                            h_ctx3.policy_resp, h_ctx.env_eq, h_ctx3.heap_len_eq⟩
                         have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
-                          h_he_chain.envVis_preserve env_a env_b
+                          h_he_chain.envVis_preserve env_a env_b h_ctx.env_eq
                             h_ctx.ev_a h_ctx.ev_b h_env
                         refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
                                 h_he_chain, h_env_out, h_meta3,
@@ -3058,7 +3061,7 @@ theorem frame : ∀ n, FrameStmt n := by
                        h_ctx3.em_a, h_ctx3.em_b,
                        h_ctx3.policy_resp, h_ctx.env_eq, h_ctx3.heap_len_eq⟩
                     have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
-                      h_he_chain.envVis_preserve env_a env_b
+                      h_he_chain.envVis_preserve env_a env_b h_ctx.env_eq
                         h_ctx.ev_a h_ctx.ev_b h_env
                     refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
                             h_he_chain, h_env_out, h_meta3,
@@ -3098,15 +3101,184 @@ theorem frame : ∀ n, FrameStmt n := by
                     simp only at h_eval
                     have hl_b : env_b.lookup x = some idx := by
                       rw [← h_ctx.env_eq]; exact hl
-                    -- Closing the `.set` case in full requires the
-                    -- mutual `ValVis_aux_update` / `EnvVis_aux_update`
-                    -- depth induction (above) to handle each of the
-                    -- four sub-cases (plain vs meta, accept vs reject).
-                    -- The infrastructure is in place; the remaining
-                    -- work is finite case analysis. Punted as a
-                    -- localized sorry while the `WAND` results land
-                    -- on top of the already-closed framing structure.
-                    sorry
+                    -- The "self-update preserves universal-depth bisim"
+                    -- precondition for `ValVis_aux_update` /
+                    -- `EnvVis_aux_update`. This is a separate small
+                    -- depth-induction lemma (not yet proved): given
+                    -- `ValVis v_a v_b at OLD heaps`, conclude
+                    -- `ValVis v_a v_b at NEW heaps` (where NEW is OLD
+                    -- with idx updated to v_a / v_b respectively). The
+                    -- four sub-cases below all rely on this. Punted as
+                    -- a single small lemma to be filled in.
+                    have h_vis_v_at_new :
+                        ∀ k, ValVis_aux k v_a v_b
+                              (s_a_inner.heap.update idx v_a)
+                              (s_b_inner.heap.update idx v_b) := by
+                      sorry  -- self-update preserves bisim (provable by
+                             -- depth induction on k using the existing
+                             -- `ValVis_aux_update` infrastructure).
+                    have hv_va_new :
+                        ValValid v_a (s_a_inner.heap.update idx v_a) :=
+                      ValValid.length_mono v_a hv_va
+                        (Heap.update_length s_a_inner.heap idx v_a ▸ Nat.le_refl _)
+                    have hv_vb_new :
+                        ValValid v_b (s_b_inner.heap.update idx v_b) :=
+                      ValValid.length_mono v_b hv_vb
+                        (Heap.update_length s_b_inner.heap idx v_b ▸ Nat.le_refl _)
+                    -- A small helper: HeapEvolution from a self-update at
+                    -- `idx` (used in plain mutation and in the meta-accept
+                    -- case). The two sides update at the *same* idx (by
+                    -- env_eq → env_a.lookup x = env_b.lookup x = some idx)
+                    -- to bisim-related new values v_a, v_b.
+                    have h_he_update :
+                        HeapEvolution s_a_inner s_b_inner
+                          { s_a_inner with heap := s_a_inner.heap.update idx v_a }
+                          { s_b_inner with heap := s_b_inner.heap.update idx v_b } := by
+                      refine ⟨?_, ?_, ?_, ?_⟩
+                      · show s_a_inner.heap.length ≤
+                            (s_a_inner.heap.update idx v_a).length
+                        rw [Heap.update_length]; exact Nat.le_refl _
+                      · show s_b_inner.heap.length ≤
+                            (s_b_inner.heap.update idx v_b).length
+                        rw [Heap.update_length]; exact Nat.le_refl _
+                      · intro nE env_a' env_b' h_env_eq' hev_a' hev_b' h_env_vis
+                        -- Apply EnvVis_aux_update at depth nE. The
+                        -- env_eq precondition (h_env_eq') is exactly
+                        -- the new structural constraint we added.
+                        exact EnvVis_aux_update nE env_a' env_b'
+                          s_a_inner.heap s_b_inner.heap idx v_a v_b
+                          h_ctx_inner.hv_a h_ctx_inner.hv_b
+                          h_ctx_inner.heap_len_eq hev_a' hev_b'
+                          h_env_eq' h_vis_v_at_new
+                          hv_va_new hv_vb_new h_env_vis
+                      · intro nV v_x v_y hv_x hv_y h_v_vis
+                        -- Apply ValVis_aux_update at depth nV on (v_x, v_y).
+                        exact ValVis_aux_update nV v_x v_y
+                          s_a_inner.heap s_b_inner.heap idx v_a v_b
+                          h_ctx_inner.hv_a h_ctx_inner.hv_b
+                          h_ctx_inner.heap_len_eq hv_x hv_y
+                          h_vis_v_at_new hv_va_new hv_vb_new h_v_vis
+                    -- Now case-analyze on isMetaMutation x env_a metaEnv.
+                    by_cases h_meta_mut : isMetaMutation x env_a metaEnv = true
+                    · -- META MUTATION CASE.
+                      have h_meta_mut_b : isMetaMutation x env_b metaEnv = true := by
+                        unfold isMetaMutation at h_meta_mut ⊢
+                        rw [hl] at h_meta_mut; rw [hl_b]
+                        exact h_meta_mut
+                      -- The meta-mutation case needs:
+                      --   1. Derive `metaEnv.lookup x = some idx` from
+                      --      `isMetaMutation = true`.
+                      --   2. From `EnvVis metaEnv metaEnv` at the inner
+                      --      state pair, get `oldVal_a, oldVal_b` bisim
+                      --      at idx on each side.
+                      --   3. Apply `policy_resp` to conclude same gate
+                      --      decision (after relating `s_a.policy` =
+                      --      `s_a_inner.policy` via the eval-doesn't-
+                      --      change-policy lemma — easy except for
+                      --      nested .installPolicy in the RHS, which is
+                      --      a separate observation).
+                      --   4. Branch on accept/reject; admit uses
+                      --      `h_he_update`, reject uses `h_he_inner`.
+                      -- Punted as a localized sorry while we lock in
+                      -- the plain mutation case.
+                      sorry
+                    · -- PLAIN MUTATION CASE: not gated, both sides return
+                      -- (.bool true, heap.update idx v).
+                      have h_meta_mut_b_eq : isMetaMutation x env_b metaEnv =
+                          isMetaMutation x env_a metaEnv := by
+                        rw [h_ctx.env_eq]
+                      have h_meta_mut_b_false :
+                          isMetaMutation x env_b metaEnv = false := by
+                        rw [h_meta_mut_b_eq]; cases h_dec : isMetaMutation x env_a metaEnv
+                        · rfl
+                        · exact absurd h_dec h_meta_mut
+                      have h_meta_mut_a_false :
+                          isMetaMutation x env_a metaEnv = false := by
+                        cases h_dec : isMetaMutation x env_a metaEnv
+                        · rfl
+                        · exact absurd h_dec h_meta_mut
+                      rw [h_meta_mut_a_false] at h_eval
+                      simp only [Bool.false_eq_true, ↓reduceIte,
+                                 Option.some.injEq, Prod.mk.injEq] at h_eval
+                      obtain ⟨h_r, h_s⟩ := h_eval
+                      subst h_r; subst h_s
+                      -- Compose HeapEvolution: inner step + update step.
+                      have h_he_chain : HeapEvolution s_a s_b
+                          { s_a_inner with heap := s_a_inner.heap.update idx v_a }
+                          { s_b_inner with heap := s_b_inner.heap.update idx v_b } :=
+                        HeapEvolution.trans h_he_inner h_he_update
+                      -- Output WFCtx. The HeapValid claims for the
+                      -- updated heaps follow from validity of v_a, v_b
+                      -- (which are validly placed at idx) and validity
+                      -- of unchanged cells (carried from h_ctx_inner).
+                      have h_len_a : s_a_inner.heap.length =
+                          (s_a_inner.heap.update idx v_a).length :=
+                        (Heap.update_length _ _ _).symm
+                      have h_len_b : s_b_inner.heap.length =
+                          (s_b_inner.heap.update idx v_b).length :=
+                        (Heap.update_length _ _ _).symm
+                      have h_le_a : s_a_inner.heap.length ≤
+                          (s_a_inner.heap.update idx v_a).length :=
+                        Nat.le_of_eq h_len_a
+                      have h_le_b : s_b_inner.heap.length ≤
+                          (s_b_inner.heap.update idx v_b).length :=
+                        Nat.le_of_eq h_len_b
+                      have hh_a_new : HeapValid (s_a_inner.heap.update idx v_a) := by
+                        intro i v hp
+                        by_cases h_ieq : i = idx
+                        · subst h_ieq
+                          rw [Heap.update_get_eq _ _ _
+                              (h_ctx_inner.ev_a x i hl)] at hp
+                          simp only [Option.some.injEq] at hp
+                          subst hp
+                          exact ValValid.length_mono v_a hv_va h_le_a
+                        · rw [Heap.update_get_neq _ _ _ _ h_ieq] at hp
+                          have hv_old := h_ctx_inner.hv_a i v hp
+                          exact ValValid.length_mono v hv_old h_le_a
+                      have hh_b_new : HeapValid (s_b_inner.heap.update idx v_b) := by
+                        intro i v hp
+                        by_cases h_ieq : i = idx
+                        · subst h_ieq
+                          rw [Heap.update_get_eq _ _ _
+                              (h_ctx_inner.ev_b x i hl_b)] at hp
+                          simp only [Option.some.injEq] at hp
+                          subst hp
+                          exact ValValid.length_mono v_b hv_vb h_le_b
+                        · rw [Heap.update_get_neq _ _ _ _ h_ieq] at hp
+                          have hv_old := h_ctx_inner.hv_b i v hp
+                          exact ValValid.length_mono v hv_old h_le_b
+                      have h_ctx_out :
+                          WFCtx env_a env_b metaEnv
+                            { s_a_inner with heap := s_a_inner.heap.update idx v_a }
+                            { s_b_inner with heap := s_b_inner.heap.update idx v_b } := by
+                        refine ⟨h_ctx_inner.state_ext, hh_a_new, hh_b_new,
+                                ?_, ?_, ?_, ?_, h_ctx_inner.policy_resp,
+                                h_ctx_inner.env_eq, ?_⟩
+                        · exact EnvValid.length_mono h_ctx_inner.ev_a h_le_a
+                        · exact EnvValid.length_mono h_ctx_inner.ev_b h_le_b
+                        · exact EnvValid.length_mono h_ctx_inner.em_a h_le_a
+                        · exact EnvValid.length_mono h_ctx_inner.em_b h_le_b
+                        · simp [Heap.update_length, h_ctx_inner.heap_len_eq]
+                      have h_env_out : EnvVis env_a env_b
+                          (s_a_inner.heap.update idx v_a)
+                          (s_b_inner.heap.update idx v_b) :=
+                        h_he_chain.envVis_preserve env_a env_b h_ctx.env_eq
+                          h_ctx.ev_a h_ctx.ev_b h_env
+                      have h_meta_out : EnvVis metaEnv metaEnv
+                          (s_a_inner.heap.update idx v_a)
+                          (s_b_inner.heap.update idx v_b) :=
+                        h_he_chain.envVis_preserve metaEnv metaEnv rfl
+                          h_ctx.em_a h_ctx.em_b h_meta
+                      refine ⟨.bool true,
+                              { s_b_inner with heap := s_b_inner.heap.update idx v_b },
+                              ?_,
+                              -- ValVis on (.bool true, .bool true): trivial.
+                              (fun d => by cases d with
+                                | zero => trivial
+                                | succ _ => rfl),
+                              h_ctx_out, h_he_chain, h_env_out, h_meta_out,
+                              trivial, trivial⟩
+                      simp [eval, h_eval_e_b, hl_b, h_meta_mut_b_false]
         | letE x e body =>
             simp only [eval] at h_eval
             cases he : eval k ptable e env_a metaEnv s_a with
@@ -3270,7 +3442,7 @@ theorem frame : ∀ n, FrameStmt n := by
                    h_ctx_body.em_a, h_ctx_body.em_b,
                    h_ctx_body.policy_resp, h_ctx.env_eq, h_ctx_body.heap_len_eq⟩
                 have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
-                  h_he_chain.envVis_preserve env_a env_b
+                  h_he_chain.envVis_preserve env_a env_b h_ctx.env_eq
                     h_ctx.ev_a h_ctx.ev_b h_env
                 refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out,
                         h_he_chain, h_env_out, h_meta_body,
