@@ -368,21 +368,23 @@ theorem multnExactPolicy_respects_bisim : PolicyRespectsBisim multnExactPolicy :
       have h_n_eq : ∀ idx_n, cenv.lookup "num?" = some idx_n →
           heap_a[idx_n]? = heap_b[idx_n]? :=
         fun idx_n h => h_cells_eq idx_n ⟨"num?", h⟩
-      -- The heap appears at two cenv-bound cell accesses inside the
-      -- multn-shape match arm. The infrastructure to close this proof
-      -- is fully in place: `h_cells_eq` says heap_a, heap_b agree at
-      -- cenv-bound indices; `h_o_eq` and `h_n_eq` specialize this to
-      -- the "orig" and "num?" indices that the policy inspects.
-      --
-      -- What remains is purely Lean-tactical: the policy's outer
-      -- match on `Val.closure ps body cenv` doesn't reduce when `ps`
-      -- and `body` are arbitrary variables (Lean can't case-eliminate
-      -- against the literal multn pattern without nested case analysis
-      -- on `ps`'s structure and `body`'s expression structure). Either
-      -- (a) ~80 LOC of explicit nested case analysis on `ps`/`body`,
-      -- or (b) a small refactor of `multnExactPolicy` to factor the
-      -- heap-dependent part through a helper, would close it.
-      sorry
+      -- Strip the heap-independent target check; then `split` on the
+      -- multn-shape match. If the pattern matches, `cenv = cenv✝` so
+      -- the inner heap accesses agree by `h_o_eq`/`h_n_eq`. If not,
+      -- both sides return `false`.
+      congr 1
+      split
+      · next _ _ heq =>
+          injection heq with _ _ hcenv
+          subst hcenv
+          congr 1
+          · cases h_o : cenv.lookup "orig" with
+            | none => rfl
+            | some idx_o => simp [h_o_eq idx_o h_o]
+          · cases h_n : cenv.lookup "num?" with
+            | none => rfl
+            | some idx_n => simp [h_n_eq idx_n h_n]
+      · rfl
 
 /-! ## Install-protocol hypotheses -/
 
