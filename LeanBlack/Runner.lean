@@ -6,27 +6,39 @@
        installed via `(em (let ((orig base-apply)) (set! base-apply <PROP>)))`,
        replaces the meta-env's `base-apply`).
     2. Write a wrapper file, run `checkProposal`. The wrapper installs
-       under the active policy (currently `numGuardPolicy`) and runs
-       a fixed witness program `(2 3 4)`.
+       under `multnExactPolicy` and runs a fixed witness program
+       `(2 3 4)`.
     3. Outcome: `.elabError` (proposal didn't elaborate),
        `.rejected` (policy refused), or `.admitted` (policy admitted,
        witness program ran).
     4. On elab error, retry up to `maxRetries` times with the
        diagnostic fed back into the prompt.
 
-  ## Honest scope
+  ## What this enforces
 
-  This cascade demonstrates the LLM-proposer architecture; it is
-  *not* an enforcement of `multnExact_soundForCE_first_install`.
-  The active policy here is `numGuardPolicy` (loose syntactic
-  shape, **not** CE-sound on its own — see DESIGN.md "What this
-  isn't"); proposals matching the loose shape can pass admission
-  while breaking semantic conservativity. The verified CE story
-  is `multnExactPolicy` + the install-protocol theorem; the
-  runner does not currently enforce that protocol's preconditions
-  (target name, captured-env facts, RHS-effect freedom). See
-  FUTURE.md / *Hardening the proposal-to-admission seam* for the
-  next-milestone roadmap.
+  `multnExactPolicy` is **CE-sound** for the install-protocol
+  invariants it checks at runtime via `MutationCtx`:
+
+  - target = "base-apply" (no other meta-env cell may be replaced)
+  - structural multn shape (strict: delegating else-branch)
+  - `OrigBoundIn`: captured `orig` cell holds `.builtinBaseApply`
+  - `NumQBoundIn`: captured `num?` cell holds `.prim "num?"`
+
+  The bridge lemma `multnExactPolicy_implies_InstallFacts` (in
+  `Policies.lean`) proves that runtime admission discharges
+  exactly the install-protocol facts that the headline soundness
+  theorem `multnExact_soundForCE_first_install` requires.
+
+  ## Outstanding scope
+
+  The proof stage is deferred — adding it requires the LLM to
+  supply a Lean-level proof of CE-soundness (e.g., a closed term
+  of `MultnExactShape` or `CE`) alongside the modification. See
+  `LLM_PROOF_CASCADE.md` for the architectural target. The
+  elaboration path also splices into Lean source and runs
+  `lake env lean --run`, which is **not a security boundary**
+  (see `GOTCHAS.md` #17 and `FUTURE.md` / *Hardening seam* /
+  item 7).
 -/
 
 import LeanBlack.Bedrock
@@ -92,9 +104,27 @@ runner via:
 
   (em (let ((orig base-apply)) (set! base-apply <YOUR PROPOSAL>)))
 
-The active admission policy is `numGuardPolicy`, which admits a
-closure of arity 2 whose body begins `(if (num? <var>) ... ...)`.
-A wrapper of any other shape will be REFUSED.
+The active admission policy is `multnExactPolicy`, which admits a
+closure of EXACTLY this shape:
+
+  .lam [\"op\", \"args\"]
+    (.ifte (.primApp (.var \"num?\") [.var \"op\"])
+       <numeric branch>
+       (.primApp (.var \"orig\") [.var \"op\", .var \"args\"]))
+
+— two parameters named exactly \"op\" and \"args\", a single `.ifte`
+on `(num? op)` as the cond, and an else-branch that EXACTLY
+delegates to `(orig op args)` via primApp on the captured `orig`.
+
+The runtime gate ALSO checks (via `MutationCtx`):
+- the target of the `set!` is exactly `\"base-apply\"` (no other
+  meta-env binding may be replaced).
+- the captured `orig` cell holds `Val.builtinBaseApply` (so the
+  delegation actually reaches the original interpreter).
+- the captured `num?` cell holds `Val.prim \"num?\"` (so the cond
+  evaluation in the body resolves correctly).
+
+A wrapper that doesn't satisfy ALL of these will be REFUSED.
 
 The data types:
 

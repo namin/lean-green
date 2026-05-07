@@ -71,6 +71,56 @@ inductive Env where
   deriving Repr
 end
 
+mutual
+  /-- Boolean equality on `Val`. Mutually recursive with `exprBeq`
+      and `envBeq` because `Val.closure` carries an `Expr` body and
+      an `Env` cenv. Used by ctx-aware policies that compare a
+      proposed value to a heap cell (multi-install soundness). -/
+  def Val.beq : Val → Val → Bool
+    | .num a,             .num b             => a == b
+    | .bool a,            .bool b             => a == b
+    | .nilV,              .nilV               => true
+    | .cons x₁ y₁,        .cons x₂ y₂         => Val.beq x₁ x₂ && Val.beq y₁ y₂
+    | .sym a,             .sym b              => a == b
+    | .closure ps₁ b₁ e₁, .closure ps₂ b₂ e₂  =>
+        ps₁ == ps₂ && Expr.beq b₁ b₂ && Env.beq e₁ e₂
+    | .prim a,            .prim b             => a == b
+    | .builtinBaseApply,  .builtinBaseApply   => true
+    | _,                  _                   => false
+
+  def Expr.beq : Expr → Expr → Bool
+    | .num a,         .num b         => a == b
+    | .bool a,        .bool b         => a == b
+    | .quote a,       .quote b        => Val.beq a b
+    | .var a,         .var b          => a == b
+    | .ifte c₁ t₁ e₁, .ifte c₂ t₂ e₂  =>
+        Expr.beq c₁ c₂ && Expr.beq t₁ t₂ && Expr.beq e₁ e₂
+    | .lam ps₁ b₁,    .lam ps₂ b₂    => ps₁ == ps₂ && Expr.beq b₁ b₂
+    | .app es₁,       .app es₂        => exprListBeq es₁ es₂
+    | .set x₁ e₁,     .set x₂ e₂      => x₁ == x₂ && Expr.beq e₁ e₂
+    | .em b₁,         .em b₂          => Expr.beq b₁ b₂
+    | .primApp f₁ as₁, .primApp f₂ as₂ =>
+        Expr.beq f₁ f₂ && exprListBeq as₁ as₂
+    | .letE x₁ e₁ b₁, .letE x₂ e₂ b₂  =>
+        x₁ == x₂ && Expr.beq e₁ e₂ && Expr.beq b₁ b₂
+    | .seq es₁,       .seq es₂        => exprListBeq es₁ es₂
+    | .installPolicy a, .installPolicy b => a == b
+    | _,              _                => false
+
+  def exprListBeq : List Expr → List Expr → Bool
+    | [],      []      => true
+    | x :: xs, y :: ys => Expr.beq x y && exprListBeq xs ys
+    | _,       _        => false
+
+  def Env.beq : Env → Env → Bool
+    | .nil,           .nil           => true
+    | .cons k₁ i₁ r₁, .cons k₂ i₂ r₂ => k₁ == k₂ && i₁ == i₂ && Env.beq r₁ r₂
+    | _,              _               => false
+end
+
+/-- `==` for `Val` (used by the policy gate). -/
+instance : BEq Val := ⟨Val.beq⟩
+
 abbrev Heap := List Val
 
 /-- The mutation site context the policy gate sees at admission

@@ -105,27 +105,35 @@ heaps without requiring a prefix relation.
 
 Two concessions worth flagging up-front:
 
-0. **The runner partially enforces the verified theorem's
-   preconditions.** As of the runner-vs-theorem hardening
-   (`FUTURE.md` / *Hardening the proposal-to-admission seam*
-   items 1, 3, 6), the runtime gate *can* inspect the heap and
-   target name: `BlackPolicy` is now `MutationCtx → Val → Val →
-   Bool`. `multnExactPolicy` checks `target = "base-apply"`,
-   `OrigBoundIn`, and `NumQBoundIn` at runtime, and the bridge
-   lemma `multnExactPolicy_implies_InstallFacts` proves that
-   admission discharges exactly the install-protocol facts the
-   headline theorem requires. The TOCTOU `.set`-RHS-policy-
-   downgrade attack is closed by freezing `s.policy` before the
-   RHS evaluates. Adversarial smoke tests (scene 3 of `Smoke.lean`)
-   exercise these end-to-end — shadowed-`orig`, wrong target,
-   numGuard-shaped malicious all refused. **What remains:** the
-   active *runner* policy in `Elab.lean` / `Runner.lean` is still
-   hardcoded to `numGuardPolicy` (loose syntactic shape). Switching
-   to `multnExactPolicy` is now mostly a config flip; see item 4
-   of the hardening section in `FUTURE.md`. Until that flip lands,
-   what *can* be enforced isn't yet what *is* enforced by the
-   default runner — but the kernel-side proof and the runtime
-   policy-side check are now aligned.
+0. **The runner enforces the verified theorem's preconditions.**
+   As of the runner-vs-theorem hardening (`FUTURE.md` /
+   *Hardening the proposal-to-admission seam* items 1, 3, 4, 6):
+
+   - `BlackPolicy` is `MutationCtx → Val → Val → Bool` — the gate
+     sees target name, heap, env, metaEnv, and index.
+   - `multnExactPolicy` checks `target = "base-apply"`,
+     `OrigBoundIn`, and `NumQBoundIn` at runtime against
+     `ctx.heap`.
+   - The bridge lemma `multnExactPolicy_implies_InstallFacts`
+     proves that runtime admission discharges exactly the
+     install-protocol facts the headline theorem requires.
+   - The `.set` clause freezes `s.policy` before evaluating the
+     RHS, closing the TOCTOU `installPolicy`-mid-RHS downgrade
+     attack.
+   - The active runner policy in `Elab.lean` / `Runner.lean` is
+     `multnExactPolicy` (`idx_multnExact = 2`).
+   - Adversarial smoke tests (scene 3 of `Smoke.lean`) exercise
+     all of this end-to-end — shadowed-`orig`, wrong target,
+     `numGuard`-shaped malicious, TOCTOU downgrade all refused.
+
+   The runner's "ADMITTED" verdict now means: the runtime gate
+   verified the install-protocol facts that the headline
+   soundness theorem requires. Kernel and runtime are aligned.
+
+   *What's left:* the elaboration path (`Elab.lean` /
+   `lake env lean --run`) is still not a security boundary —
+   the LLM can emit Lean elaboration-time effects. See
+   `GOTCHAS.md` #17 and `FUTURE.md` / *Hardening seam* / item 7.
 
 1. **`eval`'s `.quote v` is restricted to "closed" values.** `eval`
    checks `closedValB v` at the `.quote v` case and returns `none`

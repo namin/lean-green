@@ -56,15 +56,30 @@ def callAsBaseApply (fuel : Nat) (ptable : PolicyTable) (baseApply : Val)
     values, formulated against the value-bisimulation `ValVis`.
     `new` conservatively extends `old` if every (op, operands)
     where `old` succeeds, `new` also succeeds with a `ValVis`-related
-    result. The fuel may differ on the two sides — `new` typically
-    needs more fuel than `old` because the closure body adds eval
-    steps. -/
+    result *and* the post-states are well-formed and agree.
+
+    The full conclusion bundles:
+    - `ValVis r r' s'.heap s''.heap` — results bisim-related.
+    - `s'.policy = s''.policy` — both post-states agree on policy.
+      A reflective replacement that hijacked the policy would
+      violate this (and so violate CE).
+    - `HeapValid s''.heap` — the new post-state heap is well-
+      formed, so further calls remain safe.
+    - `s.heap.length ≤ s''.heap.length` — the new call doesn't
+      shrink the heap. (`HeapValid` + monotonicity together mean
+      the new heap is a real extension of the initial state.)
+
+    The fuel may differ on the two sides — `new` typically needs
+    more fuel than `old` because the closure body adds eval steps. -/
 def CE (old new : Val) : Prop :=
   ∀ fuel ptable op operands metaEnv s r s',
     callAsBaseApply fuel ptable old op operands metaEnv s = some (r, s') →
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
-      ValVis r r' s'.heap s''.heap
+      ValVis r r' s'.heap s''.heap ∧
+      s'.policy = s''.policy ∧
+      HeapValid s''.heap ∧
+      s.heap.length ≤ s''.heap.length
 
 abbrev BlackPolicy.SoundForCE (p : BlackPolicy) : Prop := p.Sound CE
 
@@ -175,11 +190,17 @@ theorem numGuard_sound_for_shape :
       admitted; mutating `"+"` etc. is refused even if shape matches).
     - the closure's captured `orig` cell holds `.builtinBaseApply`
       (so post-install `(orig op args)` dispatches to the builtin).
+      **For first install only.** Multi-install — where the captured
+      `orig` is the *previous* multn closure rather than
+      `.builtinBaseApply` — needs a more general `Val.beq`-based
+      runtime check (see GOTCHAS / FUTURE / multi-install).
     - the closure's captured `num?` cell holds `.prim "num?"`
       (so the body's cond evaluation can resolve).
 
-    These checks correspond exactly to the `InstallFacts` predicate
-    used by `multnExact_soundForCE_first_install`; the bridge lemma
+    These checks correspond exactly to the `InstallFacts
+    .builtinBaseApply new ctx.heap` predicate (the special case
+    `oldVal = .builtinBaseApply` of the parameterized
+    `InstallFacts`); the bridge lemma
     `multnExactPolicy_implies_InstallFacts` below witnesses this. -/
 
 def multnExactPolicy : BlackPolicy := fun ctx _old new =>
@@ -193,7 +214,7 @@ def multnExactPolicy : BlackPolicy := fun ctx _old new =>
               (.primApp (.var "orig") [.var "op", .var "args"]))
        cenv =>
        -- OrigBoundIn check: cenv binds "orig" to a heap cell
-       -- holding .builtinBaseApply.
+       -- holding .builtinBaseApply (first-install case).
        (match cenv.lookup "orig" with
         | some idx_o =>
             match ctx.heap[idx_o]? with
@@ -252,12 +273,16 @@ def NumQBoundIn (heap : Heap) (new : Val) : Prop :=
     cenv.lookup "num?" = some idx ∧
     heap[idx]? = some (.prim "num?")
 
-/-- Both install-time facts the runner must establish when it admits
-    a `multnExactPolicy`-shaped modification: the new closure's cenv
-    binds `"orig"` to the captured `.builtinBaseApply`, and binds
-    `"num?"` to `.prim "num?"`. -/
-structure InstallFacts (new : Val) (heap : Heap) : Prop where
-  orig : OrigBoundIn heap .builtinBaseApply new
+/-- Install-time facts the runner must establish when it admits
+    a `multnExactPolicy`-shaped modification: the new closure's
+    cenv binds `"orig"` to a heap cell holding the *previous*
+    base-apply value (= `oldVal` in the gate signature), and binds
+    `"num?"` to `.prim "num?"`. Parameterized by `oldVal` to
+    support multi-install: the first install has
+    `oldVal = .builtinBaseApply`; subsequent installs have
+    `oldVal` = the previous multn closure. -/
+structure InstallFacts (oldVal new : Val) (heap : Heap) : Prop where
+  orig : OrigBoundIn heap oldVal new
   numq : NumQBoundIn heap new
 
 /-- **Bridge lemma**: the runtime gate's admission *implies* the
@@ -265,28 +290,25 @@ structure InstallFacts (new : Val) (heap : Heap) : Prop where
     old new = true`, we know:
 
     1. `ctx.target = "base-apply"` (target restriction).
-    2. `new` is multn-shaped with the cenv lookups satisfying
-       `OrigBoundIn` and `NumQBoundIn` against `ctx.heap`.
+    2. `new` is multn-shaped, its captured `orig` cell holds
+       `.builtinBaseApply` (first-install case), and its captured
+       `num?` cell holds `.prim "num?"`.
 
-    Together this gives `InstallFacts new ctx.heap` and the target
-    restriction — both are caller obligations on
-    `multnExact_soundForCE_first_install` that the runtime gate now
-    discharges directly. -/
+    Together this gives `InstallFacts .builtinBaseApply new ctx.heap`
+    — the install-protocol obligation on
+    `multnExact_soundForCE_first_install` that the runtime gate
+    now discharges directly. -/
 theorem multnExactPolicy_implies_InstallFacts
     {ctx : MutationCtx} {old new : Val}
     (h : multnExactPolicy ctx old new = true) :
-    ctx.target = "base-apply" ∧ InstallFacts new ctx.heap := by
-  -- Extract `new`'s shape first: this gives a specific closure form.
+    ctx.target = "base-apply" ∧ InstallFacts .builtinBaseApply new ctx.heap := by
   have shape : MultnExactShape new :=
     multnExact_sound_for_shape ctx old new h
   obtain ⟨t, cenv, h_new_eq⟩ := shape
-  -- Substitute new = .closure["op","args"] body cenv before unfolding,
-  -- so the match in multnExactPolicy normalizes to the closure arm body.
   subst h_new_eq
   unfold multnExactPolicy at h
   simp only [Bool.and_eq_true, beq_iff_eq] at h
   obtain ⟨h_tgt, h_orig, h_numq⟩ := h
-  -- Walk the orig check.
   have orig_facts :
       ∃ idx_o, cenv.lookup "orig" = some idx_o ∧
                ctx.heap[idx_o]? = some .builtinBaseApply := by
@@ -307,7 +329,6 @@ theorem multnExactPolicy_implies_InstallFacts
             | cons _ _ => simp at h_orig
             | prim _ => simp at h_orig
             | closure _ _ _ => simp at h_orig
-  -- Walk the numq check.
   have numq_facts :
       ∃ idx_n, cenv.lookup "num?" = some idx_n ∧
                ctx.heap[idx_n]? = some (.prim "num?") := by
@@ -496,7 +517,10 @@ theorem multnExact_CE_num_case_vacuous
         = some (r, s') →
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new (.num n) operands metaEnv s = some (r', s'') ∧
-      ValVis r r' s'.heap s''.heap := by
+      ValVis r r' s'.heap s''.heap ∧
+      s'.policy = s''.policy ∧
+      HeapValid s''.heap ∧
+      s.heap.length ≤ s''.heap.length := by
   intro h
   rw [callAsBaseApply_builtin_num_none] at h
   contradiction
@@ -528,11 +552,14 @@ theorem multnExact_CE_nonnum_case
     {r : Val} {s' : RunState}
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
-    (install : InstallFacts new s.heap)
+    (install : InstallFacts .builtinBaseApply new s.heap)
     (wf : RuntimeWF new metaEnv op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
-      ValVis r r' s'.heap s''.heap := by
+      ValVis r r' s'.heap s''.heap ∧
+      s'.policy = s''.policy ∧
+      HeapValid s''.heap ∧
+      s.heap.length ≤ s''.heap.length := by
   -- Destructure the bundled hypotheses to keep the proof body unchanged.
   obtain ⟨h_orig, h_numq⟩ := install
   obtain ⟨h_heap, h_meta_valid, hv_cenv, hv_op, hv_operands⟩ := wf
@@ -631,13 +658,21 @@ theorem multnExact_CE_nonnum_case
       h_meta_valid h_heap ⟨_, rfl⟩
       (fun v hv_v => ValVis_aux_self_extend d v s.heap _ h_heap hv_v)
   obtain ⟨_, _, _, frame_apply⟩ := frame fuel
-  obtain ⟨r_b, s_b', h_eval_b, h_vv_r, _, _, _, _, _, _⟩ :=
+  obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx', _, h_he_b', _, _, _⟩ :=
     frame_apply ptable op op operands operands metaEnv s s_alloc r s'
       h_ctx h_vv_op h_lvv_operands h_meta_vis hv_op hv_op_alloc
       hv_operands hv_operands_alloc h_app
+  -- Strengthened-CE post-state conjuncts.
+  have h_policy : s'.policy = s_b'.policy := h_ctx'.state_ext
+  have h_heap_valid : HeapValid s_b'.heap := h_ctx'.hv_b
+  have h_heap_mono : s.heap.length ≤ s_b'.heap.length := by
+    -- s.heap → s_alloc.heap (alloc'd two cells) → s_b'.heap (frame).
+    have h_he_s_to_alloc : HeapExt s s_alloc :=
+      ⟨[op, listToVal operands], rfl⟩
+    exact (HeapExt.trans h_he_s_to_alloc h_he_b').heap_le
   -- Combine: h_trace gives the outer = inner-applyDirect equality, and
   -- h_eval_b gives the inner-applyDirect = some result.
-  refine ⟨fuel + 4, s_b', r_b, ?_, h_vv_r⟩
+  refine ⟨fuel + 4, s_b', r_b, ?_, h_vv_r, h_policy, h_heap_valid, h_heap_mono⟩
   rw [h_trace]
   exact h_eval_b
 
@@ -655,11 +690,14 @@ theorem multnExact_soundForCE_first_install
     {r : Val} {s' : RunState}
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
-    (install : InstallFacts new s.heap)
+    (install : InstallFacts .builtinBaseApply new s.heap)
     (wf : RuntimeWF new metaEnv op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
-      ValVis r r' s'.heap s''.heap := by
+      ValVis r r' s'.heap s''.heap ∧
+      s'.policy = s''.policy ∧
+      HeapValid s''.heap ∧
+      s.heap.length ≤ s''.heap.length := by
   by_cases hn : ∃ n, op = .num n
   · obtain ⟨n, hop⟩ := hn
     subst hop

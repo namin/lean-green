@@ -69,15 +69,14 @@ facts the headline theorem requires. Tested in `Smoke.lean`
 scene 3 — shadowed-`orig`, wrong target, `numGuard`-shaped
 malicious all refused.
 
-### 4. Switch the runner to `multnExactPolicy` + a trusted installer
+### 4. ✅ DONE — Switch the runner to `multnExactPolicy`
 
-With (1) and (3) landed, this is now mostly a config flip in
-`Elab.lean` (`installPolicy 1` → `installPolicy 2` for
-`idx_multnExact`) plus an updated prompt in `Runner.lean`. The
-trusted installer can stay as a thin wrapper that just calls
-`(em (let orig base-apply (set! base-apply <PROP>)))`; the
-runtime gate will now actually enforce the install-protocol
-facts.
+`Elab.lean` now hardcodes `installPolicy 2` (`idx_multnExact`).
+`Runner.lean`'s prompt describes the strict shape and the
+runtime install-protocol checks. The trusted installer is the
+thin wrapper `(em (let orig base-apply (set! base-apply <PROP>)))`;
+the runtime gate now actually enforces target / shape /
+`OrigBoundIn` / `NumQBoundIn` via `MutationCtx`.
 
 ### 5. Strengthen `CE` with post-state conditions
 
@@ -153,13 +152,12 @@ the parser/AST route is built.
 
 ## Extending the verified story
 
-### Multi-install soundness
+### Multi-install soundness (foundation laid, full proof pending)
 
-Currently `multnExact_soundForCE_first_install` covers exactly
-*one* admission from a clean state. A real reflective interpreter
-admits a sequence of modifications, each in a state where
-previous admissions have already mutated the meta-env. The
-generalization:
+`multnExact_soundForCE_first_install` covers exactly *one*
+admission from a clean state. A real reflective interpreter
+admits a sequence of modifications. The generalization is a
+chain-CE theorem:
 
 ```
 multnExact_soundForCE_seq :
@@ -168,20 +166,42 @@ multnExact_soundForCE_seq :
   ...
 ```
 
-The hard part is not the framing (each individual install's
+The hard part is *not* the framing (each individual install's
 post-call is set-free, so `frame.applyDirect` applies). It is
-keeping
-the install-protocol invariants — `OrigBoundIn`, `NumQBoundIn` —
-inductive across the chain. After install₁, what does
-`OrigBoundIn` say about install₂'s captured `orig`? It captures
-*the post-install₁* `base-apply`, which is the install₁ closure,
-not `.builtinBaseApply`. So the install-protocol predicates have
-to be parameterized by what `orig` captures, with a proof that
-the captured value CE-extends `.builtinBaseApply` (transitively
-through the install chain).
+keeping the install-protocol invariants — `OrigBoundIn`,
+`NumQBoundIn` — inductive across the chain.
 
-Estimated: a new `InstallChain` predicate + an inductive proof
-that each chain step preserves CE-soundness. ~300 LOC.
+**What's already in place** (committed):
+- `InstallFacts` is *parameterized by `oldVal`*: it's
+  `InstallFacts (oldVal new : Val) (heap : Heap)`, so each link
+  in the chain has its own `OrigBoundIn` predicate. The first-
+  install theorem instantiates `oldVal = .builtinBaseApply`.
+- `Val.beq` / `Expr.beq` / `Env.beq` (mutual structural Bool
+  equality) and the `BEq Val` instance — what a multi-install-
+  ready runtime gate would need to compare the captured `orig`
+  cell to the current `oldVal` (whatever that is at install
+  time, not just `.builtinBaseApply`).
+
+**What remains:**
+- A `val_beq_eq` lemma (`Val.beq a b = true → a = b`), proved by
+  mutual induction on Val/Expr/Env. ~100 LOC of case-bash; no
+  proof difficulty, just verbosity.
+- Generalize `multnExactPolicy`'s runtime check from
+  hardcoded-`.builtinBaseApply` to `oldVal`-parametric (using
+  `Val.beq`).
+- Generalize the bridge lemma to produce
+  `InstallFacts oldVal new ctx.heap`.
+- Prove `CE.refl` and `CE.trans` — both need ValVis
+  reflexivity/transitivity lemmas that aren't currently
+  available. These are likely the substantive proof work,
+  ~200 LOC.
+- Compose the chain theorem: each install proves CE between the
+  new closure and the previous; chain transitivity gives CE back
+  to `.builtinBaseApply`. ~50 LOC once the lemmas above are
+  in place.
+
+Total remaining effort: ~400 LOC, mostly mechanical, plus the
+ValVis transitivity work which has some real proof structure.
 
 ### CE-soundness for `numGuardPolicy`
 

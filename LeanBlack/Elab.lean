@@ -7,12 +7,18 @@
   replaces the meta-env's `base-apply`. Whether the install succeeds
   is decided by the **active policy** at install time.
 
+  The active policy here is `multnExactPolicy` (`idx_multnExact = 2`):
+  the strict, **CE-sound** multn pattern, with runtime checks against
+  `MutationCtx` for the install-protocol facts (`OrigBoundIn`,
+  `NumQBoundIn`, `target = "base-apply"`). See
+  `multnExactPolicy_implies_InstallFacts` in `Policies.lean`.
+
   We write a tiny wrapper file:
 
       import LeanBlack
       def proposalExpr : Expr := <SPLICED LLM SOURCE>
       def runTest : Expr := .seq [
-        .installPolicy 1,                           -- numGuardPolicy
+        .installPolicy 2,                           -- multnExactPolicy
         .letE "verdict"
           (.em (.letE "orig" (.var "base-apply")
             (.set "base-apply" proposalExpr)))
@@ -29,7 +35,7 @@
   Single-stage gate (witness via current policy). The proof stage is
   deferred — adding it requires a Lean-level proof obligation
   (e.g. `MultnExactShape` or eventually `CE`), which the LLM would
-  supply alongside the modification.
+  supply alongside the modification (see `LLM_PROOF_CASCADE.md`).
 -/
 
 import LeanBlack.Black
@@ -71,7 +77,7 @@ def proposalExpr : Expr :=
 
 def runTest : Expr :=
   .seq [
-    .installPolicy 1,
+    .installPolicy 2,
     .letE \"verdict\"
       (.em (.letE \"orig\" (.var \"base-apply\")
         (.set \"base-apply\" proposalExpr)))

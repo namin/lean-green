@@ -231,25 +231,20 @@ unfolding the foldl manually.
 
 ## Runner / soundness-boundary traps
 
-### 14. The active runner policy is `numGuardPolicy`, not `multnExactPolicy` (PARTIALLY FIXED)
+### 14. The active runner policy is `multnExactPolicy` (FIXED)
 
-`Elab.lean` still hardcodes:
+`Elab.lean` and `Runner.lean` now use `multnExactPolicy`
+(`idx_multnExact = 2`), which is the CE-sound strict-shape
+policy. The runner's "ADMITTED" verdict now means: the runtime
+gate verified `target = "base-apply"`, the strict multn shape,
+and the install-protocol facts (`OrigBoundIn`, `NumQBoundIn`)
+against `MutationCtx`. The bridge lemma
+`multnExactPolicy_implies_InstallFacts` proves that this matches
+exactly what the headline soundness theorem requires.
 
-```
-.installPolicy 1   -- = idx_numGuard
-```
-
-`numGuardPolicy` is **loose** (matches `(if (num? _) ... ...)`
-shape regardless of the else-branch) and is **not CE-sound**.
-The CE-sound policy is `multnExactPolicy` (`idx_multnExact`).
-
-The infrastructure for switching is now in place: gotcha #16 is
-fixed, `multnExactPolicy` does runtime install-protocol checks,
-and `Smoke.lean` scene 3 exercises it end-to-end. What remains
-is to actually change `Elab.lean` and `Runner.lean` to use
-`idx_multnExact` and update the `Runner.lean` prompt accordingly.
-That's item 4 of `FUTURE.md` / *Hardening seam* (now mostly a
-config flip rather than an architectural extension).
+Previously (pre-Phase-A): `Elab.lean` hardcoded `installPolicy 1`
+(numGuard, loose, not CE-sound). The runner's verdict didn't
+imply CE-soundness. README's *Concession 0* documented this.
 
 ### 15. `numGuardPolicy`'s else-branch is unconstrained
 
