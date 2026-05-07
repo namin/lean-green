@@ -4789,6 +4789,65 @@ theorem frame : ∀ n, FrameStmt n := by
               rw [hne] at h_eval
               simp at h_eval
 
+/-! ## Single-side validity preservation
+
+    Specialize `frame` with `env_a = env_b = env`, `s_a = s_b = s` to
+    extract single-side validity-preservation facts: `eval`/`evalList`/
+    `applyVia`/`applyDirect` preserve `HeapValid`, produce `ValValid`
+    results, and preserve `EnvValid` of the active env. -/
+
+private theorem applyDirect_preserves_validity
+    {fuel : Nat} {ptable : PolicyTable} (hresp_pt : PolicyTableRespectsBisim ptable)
+    {op : Val} {operands : List Val} {metaEnv : Env} {s : RunState}
+    (h_heap : HeapValid s.heap) (h_op : ValValid op s.heap)
+    (h_operands : ListValValid operands s.heap)
+    (h_meta : EnvValid metaEnv s.heap)
+    (hresp_init : PolicyRespectsBisim s.policy)
+    {r : Val} {s' : RunState}
+    (h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s')) :
+    HeapValid s'.heap ∧ ValValid r s'.heap ∧ EnvValid metaEnv s'.heap ∧
+    s.heap.length ≤ s'.heap.length := by
+  obtain ⟨_, _, _, ih_apd⟩ := frame fuel
+  have h_ctx : WFCtx metaEnv metaEnv metaEnv s s :=
+    WFCtx.refl metaEnv metaEnv s h_heap h_meta h_meta hresp_init
+  -- self-self ValVis: use ValVis_aux_self_extend with extras = [].
+  have h_op_vis : ValVis op op s.heap s.heap := by
+    intro depth
+    have := ValVis_aux_self_extend depth op s.heap [] h_heap h_op
+    rwa [List.append_nil] at this
+  have h_args_vis : ListValVis operands operands s.heap s.heap := by
+    have aux : ∀ {ops : List Val}, ListValValid ops s.heap →
+        ListValVis ops ops s.heap s.heap := by
+      intro ops hv
+      induction ops with
+      | nil => trivial
+      | cons head tail ih =>
+          obtain ⟨hv_h, hv_t⟩ := hv
+          refine ⟨?_, ih hv_t⟩
+          intro depth
+          have := ValVis_aux_self_extend depth head s.heap [] h_heap hv_h
+          rwa [List.append_nil] at this
+    exact aux h_operands
+  have h_meta_vis : EnvVis metaEnv metaEnv s.heap s.heap := by
+    intro depth
+    apply EnvVis_aux_self_of_valid' depth metaEnv s.heap s.heap h_meta h_heap
+      ⟨[], by rw [List.append_nil]⟩
+    intro v hv
+    have := ValVis_aux_self_extend depth v s.heap [] h_heap hv
+    rwa [List.append_nil] at this
+  obtain ⟨r_b, s_b', h_app_b, _h_vv_r, h_ctx', h_he, _h_meta', hv_ra, _hv_rb⟩ :=
+    ih_apd ptable op op operands operands metaEnv s s r s'
+      hresp_pt h_ctx h_op_vis h_args_vis h_meta_vis
+      h_op h_op h_operands h_operands h_app
+  -- By determinism: r_b = r and s_b' = s'.
+  have h_eq_pair : (r_b, s_b') = (r, s') := by
+    have h_eq := h_app.symm.trans h_app_b
+    exact Option.some_inj.mp h_eq.symm
+  have h_r : r_b = r := (Prod.mk.injEq _ _ _ _).mp h_eq_pair |>.1
+  have h_s : s_b' = s' := (Prod.mk.injEq _ _ _ _).mp h_eq_pair |>.2
+  subst h_r; subst h_s
+  exact ⟨h_ctx'.hv_a, hv_ra, h_ctx'.em_a, h_he.len_a⟩
+
 /-! ## Functional shift: heap-prefix-insertion as a syntactic operation
 
     The semantic content of the prefix-extension lemma is
@@ -5276,6 +5335,37 @@ theorem shift_heap_update_general (cutoff : Nat) (padding h : Heap) (idx : Nat) 
           ≤ shift_idx cutoff padding.length idx := by
       rw [shift_heap_length, h_shift_idx]; omega
     rw [Heap.update_oob _ _ _ h_shift_idx_oob]
+
+/-- Helper: `List.map (shift_val cutoff offset)` is identity on a list
+    where every element is `Val.AllBelow cutoff`. -/
+private theorem map_shift_val_eq_self_of_AllBelow (cutoff offset : Nat) :
+    ∀ (l : List Val), (∀ v ∈ l, Val.AllBelow cutoff v) →
+    l.map (shift_val cutoff offset) = l
+  | [], _ => rfl
+  | x :: xs, hp => by
+      simp only [List.map_cons]
+      have hx : Val.AllBelow cutoff x := hp x List.mem_cons_self
+      have hxs : ∀ v ∈ xs, Val.AllBelow cutoff v :=
+        fun v hv => hp v (List.mem_cons.mpr (Or.inr hv))
+      rw [shift_val_id cutoff offset hx,
+          map_shift_val_eq_self_of_AllBelow cutoff offset xs hxs]
+
+/-- When the heap is `HeapDeep` and `cutoff = h.length`, shifting just
+    appends the padding: every value in `h` is `AllBelow h.length`,
+    so `shift_val` is identity on it. -/
+theorem shift_heap_id_of_deep (padding : Heap) :
+    ∀ (h : Heap), HeapDeep h →
+    shift_heap h.length padding h = h ++ padding := by
+  intro h h_deep
+  unfold shift_heap
+  -- Each element of h is Val.AllBelow h.length, so map of shift_val is identity.
+  have h_all_below : ∀ v ∈ h, Val.AllBelow h.length v := by
+    intro v hv_mem
+    obtain ⟨i, hi⟩ := List.getElem?_of_mem hv_mem
+    exact ValDeep.toAllBelow (h_deep i v hi)
+  rw [map_shift_val_eq_self_of_AllBelow h.length padding.length h h_all_below]
+  rw [List.take_length, List.drop_length]
+  simp
 
 /-! ## Self-shift weak bisim: a value/env is weakly-bisim-related to
     its own shift in the (heap, shifted-heap) pair.
@@ -7711,3 +7801,117 @@ theorem applyDirect_heap_extend_weak
         = s.heap.length + extras.length := by
     simp [List.length_append]
   omega
+
+/-- **Shift-based prefix extension.** Same conclusion as
+    `applyDirect_heap_extend_weak`, but proved via the sorry-free
+    `shift_respect` infrastructure. Stronger preconditions: deep
+    validity of `op`/`operands`/`metaEnv`/`s.heap`, plus the policies
+    `ptable`/`s.policy` are `PolicyRespectsShift` at the relevant
+    cutoff/padding.
+
+    Uses `shift_respect` to obtain the shifted-side computation,
+    `shift_heap_id_of_deep` to identify the shifted state with the
+    prefix-extended state, and `valVis_weak_self_shift` to bridge
+    the result `r` to its shift. -/
+theorem applyDirect_heap_extend_via_shift
+    {fuel : Nat} {ptable : PolicyTable} {op : Val} {operands : List Val}
+    {metaEnv : Env} {s : RunState}
+    (hresp_pt_b : PolicyTableRespectsBisim ptable)
+    (h_heap : HeapValid s.heap) (h_op : ValValid op s.heap)
+    (h_operands : ListValValid operands s.heap)
+    (h_meta : EnvValid metaEnv s.heap)
+    (hresp_init_b : PolicyRespectsBisim s.policy)
+    (extras : List Val) (h_extras : ListValValid extras s.heap)
+    (h_heap_deep : HeapDeep s.heap) (h_op_deep : ValDeep op s.heap)
+    (h_operands_deep : ListValDeep operands s.heap)
+    (h_meta_deep : EnvDeep metaEnv s.heap)
+    (hresp_pt : PolicyTableRespectsShift s.heap.length extras ptable)
+    (hresp_init : PolicyRespectsShift s.heap.length extras s.policy)
+    {r : Val} {s' : RunState}
+    (h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s')) :
+    ∃ r' s'',
+      applyDirect fuel ptable op operands metaEnv
+        { heap := s.heap ++ extras, policy := s.policy } = some (r', s'') ∧
+      ValVis_weak r r' s'.heap s''.heap ∧
+      HeapValid s''.heap ∧
+      s'.policy = s''.policy ∧
+      s.heap.length + extras.length ≤ s''.heap.length := by
+  -- Apply shift_respect at cutoff = s.heap.length, padding = extras.
+  obtain ⟨_, _, _, ih_apd⟩ := shift_respect s.heap.length extras fuel
+  have h_cutoff : s.heap.length ≤ s.heap.length := Nat.le_refl _
+  have h_app_shifted := ih_apd ptable op operands metaEnv s r s'
+    hresp_pt hresp_init h_cutoff h_app
+  -- Convert shifted forms back to identity using deep validity.
+  have h_op_below : Val.AllBelow s.heap.length op := ValDeep.toAllBelow h_op_deep
+  have h_operands_below : ListVal.AllBelow s.heap.length operands :=
+    ListValDeep.toAllBelow h_operands_deep
+  have h_meta_below : Env.AllBelow s.heap.length metaEnv :=
+    EnvDeep.toAllBelow h_meta_deep
+  rw [shift_val_id s.heap.length extras.length h_op_below,
+      shift_listVal_id s.heap.length extras.length h_operands_below,
+      shift_env_id s.heap.length extras.length h_meta_below] at h_app_shifted
+  -- Convert shift_state s to {heap := s.heap ++ extras, policy := s.policy}.
+  have h_state_eq :
+      shift_state s.heap.length extras s = { heap := s.heap ++ extras, policy := s.policy } := by
+    simp only [shift_state]
+    rw [shift_heap_id_of_deep extras s.heap h_heap_deep]
+  rw [h_state_eq] at h_app_shifted
+  -- Now h_app_shifted gives us applyDirect on the prefix-extended state.
+  refine ⟨shift_val s.heap.length extras.length r,
+          shift_state s.heap.length extras s', h_app_shifted, ?_, ?_, ?_, ?_⟩
+  · -- ValVis_weak r (shift_val r) s'.heap (shift_state s').heap.
+    -- Need: HeapValid s'.heap and ValValid r s'.heap.
+    -- Get from applyDirect_preserves_validity (frame-derived).
+    obtain ⟨h_heap', hv_r, _, _⟩ :=
+      applyDirect_preserves_validity hresp_pt_b h_heap h_op h_operands h_meta
+        hresp_init_b h_app
+    have h_mono : s.heap.length ≤ s'.heap.length :=
+      (heap_mono fuel).2.2.2 ptable op operands metaEnv s r s' h_app
+    -- (shift_state s').heap = shift_heap s.heap.length extras s'.heap.
+    show ValVis_weak r (shift_val s.heap.length extras.length r)
+      s'.heap (shift_state s.heap.length extras s').heap
+    have h_state_heap_eq :
+        (shift_state s.heap.length extras s').heap
+          = shift_heap s.heap.length extras s'.heap := rfl
+    rw [h_state_heap_eq]
+    exact valVis_weak_self_shift s.heap.length extras s'.heap h_heap' h_mono r hv_r
+  · -- HeapValid (shift_state s').heap.
+    -- Apply applyDirect_preserves_validity to the prefix-extended call.
+    have hext : ∃ ex, s.heap ++ extras = s.heap ++ ex := ⟨extras, rfl⟩
+    have h_heap_b : HeapValid (s.heap ++ extras) := by
+      intro i v hi
+      by_cases h_lt : i < s.heap.length
+      · have h_eq : (s.heap ++ extras)[i]? = s.heap[i]? :=
+          getElem?_prefix s.heap extras i h_lt
+        rw [h_eq] at hi
+        exact ValValid.heap_extends v (h_heap i v hi) hext
+      · have h_le : s.heap.length ≤ i := Nat.le_of_not_lt h_lt
+        have h_eq : (s.heap ++ extras)[i]? = extras[i - s.heap.length]? :=
+          List.getElem?_append_right h_le
+        rw [h_eq] at hi
+        exact ValValid.heap_extends v
+          (ListValValid.getElem_valid h_extras (i - s.heap.length) v hi) hext
+    have h_op_b : ValValid op (s.heap ++ extras) := ValValid.heap_extends op h_op hext
+    have h_operands_b : ListValValid operands (s.heap ++ extras) :=
+      ListValValid.heap_extends h_operands hext
+    have h_meta_b : EnvValid metaEnv (s.heap ++ extras) :=
+      EnvValid.heap_extends h_meta hext
+    obtain ⟨h_heap_out, _, _, _⟩ :=
+      @applyDirect_preserves_validity fuel ptable hresp_pt_b op operands metaEnv
+        { heap := s.heap ++ extras, policy := s.policy }
+        h_heap_b h_op_b h_operands_b h_meta_b hresp_init_b _ _ h_app_shifted
+    -- h_heap_out : HeapValid (...).heap where ... is the output state.
+    -- The output state from h_app_shifted is shift_state s.heap.length extras s'.
+    exact h_heap_out
+  · -- s'.policy = (shift_state s').policy.
+    show s'.policy = (shift_state s.heap.length extras s').policy
+    simp [shift_state]
+  · -- s.heap.length + extras.length ≤ (shift_state s').heap.length.
+    show s.heap.length + extras.length ≤ (shift_state s.heap.length extras s').heap.length
+    have : (shift_state s.heap.length extras s').heap.length
+        = s'.heap.length + extras.length := by
+      simp [shift_state, shift_heap_length]
+    rw [this]
+    have h_mono : s.heap.length ≤ s'.heap.length :=
+      (heap_mono fuel).2.2.2 ptable op operands metaEnv s r s' h_app
+    omega
