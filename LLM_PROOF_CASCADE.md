@@ -332,6 +332,3 @@ gate.
 - `FUTURE.md` — *Hardening the proposal-to-admission seam* (the
   three prerequisites) and *LLM-cascade extensions* (the broader
   research direction).
-- `PATH_A.md` — the framing-theorem story; relevant because the
-  proof-cascade's soundness obligations compose `frame` (set-free
-  framing) with the install-protocol theorem.

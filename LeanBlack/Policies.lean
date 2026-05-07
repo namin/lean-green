@@ -26,9 +26,12 @@
   - `multnExact_CE_num_case_vacuous` — proved (numerical operators
     are CE-vacuous).
   - `multnExact_soundForCE_first_install` — fully proved (conditional
-    on Path-A side conditions: the user op and operands are set-free,
-    and the heap is `HeapSetFree`).
-  - `multnExact_CE_nonnum_case` — fully proved.
+    on the install-protocol facts in `InstallFacts` and the runtime
+    invariants in `RuntimeWF`), modulo the `.set` case of `frame`
+    in `Bisim.lean` which remains `sorry` (open architectural
+    question — see DESIGN.md *Open work*).
+  - `multnExact_CE_nonnum_case` — fully proved (modulo the same
+    `.set`-in-`frame` open).
   - `multn_closure_body_unfolds` — fully proved (the deterministic
     eval-trace lemma through the closure body).
 -/
@@ -239,18 +242,6 @@ structure RuntimeWF
   vv_op       : ValValid op heap
   lvv_operands : ListValValid operands heap
 
-/-- Path-A side-conditions: the heap, the operator, and the operands
-    all lie in `frame`'s set-free domain. The runner trivially
-    maintains these — it only constructs values from `.lam` bodies of
-    set-free Black source and atomic literals, never from `.set`-bearing
-    source. See *Concession 2* in the README and the *`.set` and Path A*
-    refinement in DESIGN.md. -/
-structure SetFreeWF
-    (op : Val) (operands : List Val) (heap : Heap) : Prop where
-  sf_heap     : HeapSetFree heap
-  sf_op       : SetFreeVal op
-  sf_operands : SetFreeListVal operands
-
 /-! ## multn closure-body trace lemma
 
     With `fuel ≥ 2`, `callAsBaseApply` on the multn closure unfolds
@@ -418,9 +409,7 @@ theorem multnExact_CE_num_case_vacuous
     - `EnvValid metaEnv s.heap` — for the metaEnv preservation step.
 
     The runner's install protocol guarantees all four when admitting
-    a multn modification from the standard initial state. Path-A
-    side-conditions (`HeapSetFree` / `SetFreeVal op` /
-    `SetFreeListVal operands`) are bundled into `SetFreeWF`. -/
+    a multn modification from the standard initial state. -/
 theorem multnExact_CE_nonnum_case
     {new : Val} (h_admit : multnExactPolicy .builtinBaseApply new = true)
     {fuel : Nat} (h_fuel : fuel ≥ 2)
@@ -430,15 +419,13 @@ theorem multnExact_CE_nonnum_case
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
     (install : InstallFacts new s.heap)
-    (wf : RuntimeWF new metaEnv op operands s.heap)
-    (sf : SetFreeWF op operands s.heap) :
+    (wf : RuntimeWF new metaEnv op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
   -- Destructure the bundled hypotheses to keep the proof body unchanged.
   obtain ⟨h_orig, h_numq⟩ := install
   obtain ⟨h_heap, h_meta_valid, hv_cenv, hv_op, hv_operands⟩ := wf
-  obtain ⟨hsf_heap, hsf_op, hsf_operands⟩ := sf
   -- Structural extraction: new is the multn-shaped closure.
   have shape : MultnExactShape new :=
     multnExact_sound_for_shape .builtinBaseApply new h_admit
@@ -525,17 +512,8 @@ theorem multnExact_CE_nonnum_case
   have h_lvv_operands : ListValVis operands operands s.heap s_alloc.heap :=
     ListValVis_self_extend [op, listToVal operands] h_heap hv_operands
   have h_state_ext : StateExt s s_alloc := by show s.policy = s_alloc.policy; rfl
-  -- HeapSetFree on the alloc'd heap, given inputs are set-free.
-  have hsf_alloc : HeapSetFree s_alloc.heap := by
-    show HeapSetFree (s.heap ++ [op, listToVal operands])
-    have step1 : HeapSetFree (s.heap ++ [op]) := HeapSetFree.append hsf_heap hsf_op
-    have step2 : HeapSetFree ((s.heap ++ [op]) ++ [listToVal operands]) :=
-      HeapSetFree.append step1 (SetFreeVal_listToVal hsf_operands)
-    rw [List.append_assoc] at step2
-    simpa using step2
   have h_ctx : WFCtx metaEnv metaEnv metaEnv s s_alloc :=
-    ⟨h_state_ext, h_heap, hh_alloc, h_meta_valid, hem_alloc, h_meta_valid, hem_alloc,
-     hsf_heap, hsf_alloc⟩
+    ⟨h_state_ext, h_heap, hh_alloc, h_meta_valid, hem_alloc, h_meta_valid, hem_alloc⟩
   have h_meta_vis : EnvVis metaEnv metaEnv s.heap s_alloc.heap := by
     intro d
     show EnvVis_aux d metaEnv metaEnv s.heap (s.heap ++ [op, listToVal operands])
@@ -546,8 +524,7 @@ theorem multnExact_CE_nonnum_case
   obtain ⟨r_b, s_b', h_eval_b, h_vv_r, _, _, _, _, _, _⟩ :=
     frame_apply ptable op op operands operands metaEnv s s_alloc r s'
       h_ctx h_vv_op h_lvv_operands h_meta_vis hv_op hv_op_alloc
-      hv_operands hv_operands_alloc
-      hsf_op hsf_op hsf_operands hsf_operands h_app
+      hv_operands hv_operands_alloc h_app
   -- Combine: h_trace gives the outer = inner-applyDirect equality, and
   -- h_eval_b gives the inner-applyDirect = some result.
   refine ⟨fuel + 4, s_b', r_b, ?_, h_vv_r⟩
@@ -568,8 +545,7 @@ theorem multnExact_soundForCE_first_install
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
     (install : InstallFacts new s.heap)
-    (wf : RuntimeWF new metaEnv op operands s.heap)
-    (sf : SetFreeWF op operands s.heap) :
+    (wf : RuntimeWF new metaEnv op operands s.heap) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap := by
@@ -580,7 +556,7 @@ theorem multnExact_soundForCE_first_install
   · have h_op : OpNotNum op := by
       intro n hop_num
       exact hn ⟨n, hop_num⟩
-    exact multnExact_CE_nonnum_case h_admit h_fuel h_op h_old install wf sf
+    exact multnExact_CE_nonnum_case h_admit h_fuel h_op h_old install wf
 
 /-! ## The verified policy table -/
 

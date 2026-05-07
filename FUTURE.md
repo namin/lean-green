@@ -2,14 +2,13 @@
 
 The current development closes a single end-to-end story:
 `multnExactPolicy` is conservative-extension-sound on the first
-admitted install from a clean state. Closing this exposed the
-right shape of the framing problem (Path A: framing covers the
-non-reflective sublanguage; reflective steps are install-protocol
-theorems composing framing on the post-install user-call). What
-follows are directions that could extend, sharpen, or rewrite the
-result. They split into three families: *extending the verified
-story*, *generalizing the infrastructure*, and *redoing it on
-different foundations*.
+admitted install from a clean state. The framing infrastructure
+that makes the proof go through is closed *modulo* the `.set`
+case of `frame.eval`, which remains an open `sorry`. Routes for
+extending, sharpening, or rewriting the result split into three
+families: *extending the verified story*, *generalizing the
+infrastructure* (including closing the `.set` case), and *redoing
+it on different foundations*.
 
 ---
 
@@ -102,10 +101,9 @@ construction) and calls the policy gate, which checks
 
 The current `CE` says "old succeeds → new succeeds with a
 `ValVis`-related result." It does not say the result *states*
-agree on policy, on heap-validity, on `HeapSetFree`, or on the
-`base-apply` cell's contents. A reflective replacement could
-preserve the immediate result while corrupting future dispatch.
-Strengthen `CE` to:
+agree on policy, on heap-validity, or on the `base-apply` cell's
+contents. A reflective replacement could preserve the immediate
+result while corrupting future dispatch. Strengthen `CE` to:
 
 ```lean
 def CE (old new : Val) : Prop :=
@@ -113,9 +111,9 @@ def CE (old new : Val) : Prop :=
     ∃ fuel' s'' r',
       callAsBaseApply ... new ... = some (r', s'') ∧
       ValVis r r' s'.heap s''.heap ∧
-      s'.policy = s''.policy ∧                    -- policy preserved
-      HeapValid s''.heap ∧ HeapSetFree s''.heap ∧ -- heap invariants preserved
-      s''.heap.length ≥ s'.heap.length            -- monotone
+      s'.policy = s''.policy ∧               -- policy preserved
+      HeapValid s''.heap ∧                   -- heap invariant preserved
+      s''.heap.length ≥ s'.heap.length       -- monotone
 ```
 
 The existing `frame.applyDirect` already returns most of this in
@@ -191,8 +189,9 @@ multnExact_soundForCE_seq :
   ...
 ```
 
-The hard part is not the framing (each individual install is
-covered by Path A on the post-install user-call). It is keeping
+The hard part is not the framing (each individual install's
+post-call is set-free, so `frame.applyDirect` applies). It is
+keeping
 the install-protocol invariants — `OrigBoundIn`, `NumQBoundIn` —
 inductive across the chain. After install₁, what does
 `OrigBoundIn` say about install₂'s captured `orig`? It captures
@@ -253,109 +252,84 @@ not just *programs* but *programs + soundness proofs*. The gate
 becomes a proof-checker. This is the cleanest route to "the LLM
 cannot bypass the gate" being a pure type-theoretic property.
 
-### Wider runtime invariants (kill the Path-A side-conditions)
-
-The headline theorem currently takes `SetFreeWF` as an explicit
-side-condition. A natural extension: prove that the *runner* itself
-preserves `HeapSetFree` / `SetFreeVal` across any sequence of
-admissions, given that the initial state is set-free and every
-admission is from set-free Black source. With that meta-theorem,
-callers of `multnExact_soundForCE_first_install` can discharge
-`SetFreeWF` once at runner-startup.
-
-This is the "concession 2" practical-impact paragraph in the
-README, made formal: the runner's set-free invariant becomes a
-proved property, not a precondition.
-
-### Extending Path A to admit a Path-A-compatible class of `.set`
-
-Path A excludes all `.set` from `frame`'s domain. But not all
-`.set` is reflective: `(.set x e)` where `x` is a *non*-meta
-binding doesn't go through the policy gate (the `else` branch in
-`eval`'s `.set` clause). Plain mutation does mutate the heap, but
-the new value is whatever `e` evaluates to — and if `e` is
-set-free, the new value is `SetFreeVal`, so `HeapSetFree` is
-preserved.
-
-So Path A could be extended to admit *non-meta* `.set`. The
-restriction would be: `frame` rejects `.set x e` only when
-`isMetaMutation x env metaEnv = true`, which is a runtime check.
-Encoding this as a syntactic predicate is possible if we carry the
-metaEnv through `SetFreeExpr`'s definition.
-
-Practical payoff: probably small. Black programs in this
-development don't use plain `.set`. But it would tighten the
-"Path A is *exactly* the non-reflective sublanguage" claim to
-"Path A is *exactly* the not-meta-mutating sublanguage."
-
 ---
 
 ## Generalizing the infrastructure
 
-### Path B as a companion theorem
+### Closing `frame.eval`'s `.set` case via `HeapEvolves`
 
-The README's *Concessions* section argues Path B (a `BisimSafe`-
-restricted framing across `.set`) doesn't help any current
-client because `multnExactPolicy` isn't `BisimSafe`. But Path B
-*as a textbook framing theorem* is still worth having. Future
-policies — type-respecting policies, structurally-extending
-policies — could be `BisimSafe` and benefit from a single,
-uniform `frame_bisimsafe` theorem.
+This is the open `sorry` in `Bisim.lean`. Two things are needed:
 
-Sketch:
+**(a) Replace `HeapExt` with `HeapEvolves`.** `HeapExt s_a s_a' :=
+∃ extras, s_a'.heap = s_a.heap ++ extras` is a *prefix*-extension
+relation; in-place `Heap.update` (the `.set`-accepted branch's
+heap mutation) violates it because the new heap has the same
+length but differs at one index. Weaken to:
 
 ```
-def BlackPolicy.BisimSafe (p : BlackPolicy) : Prop :=
-  ∀ old new h, p old new = true → ∀ n, ValVis_aux n old new h h
-
 def HeapEvolves (h h' : Heap) : Prop :=
   h.length ≤ h'.length ∧
   ∀ i v, h[i]? = some v →
     ∃ v', h'[i]? = some v' ∧ ∀ n, ValVis_aux n v v' h h'
-
-theorem frame_bisimsafe : ∀ n, FrameStmt_bisimsafe n
 ```
 
-`FrameStmt_bisimsafe` replaces `HeapExt` with `HeapEvolves` in the
-postcondition and adds `BlackPolicy.BisimSafe` as a hypothesis on
-the policy. The `.set` case closes via `HeapEvolves.update` once
-the policy admits.
+— heap may grow, *and* old indices may be updated, provided the
+new value at each old index is bisim-related to the old. Prove
+`ValVis_aux_evolves` and `EnvVis_aux_evolves` (depth-induction)
+and replace `HeapExt` in `frame`'s postcondition.
 
-Estimated: ~500 LOC of new infrastructure (HeapEvolves +
-`ValVis_aux_evolves` + `EnvVis_aux_evolves` + the `.set` proof).
+**(b) Add a *policy-respecting-bisim* hypothesis to `WFCtx`:**
+
+```
+∀ x_a x_b y_a y_b, ValVis x_a x_b → ValVis y_a y_b →
+  s.policy x_a y_a = s.policy x_b y_b
+```
+
+— the policy gives the same answer on bisim-related inputs.
+This is satisfied by every policy in `verifiedTable` (each
+pattern-matches on shape, and `ValVis` on closures requires body
+equality, so shape is preserved). The `.set` case of `frame.eval`
+then closes: both sides decide the same way; both either reject
+(heap unchanged, trivially `HeapEvolves`) or admit with bisim-
+related new values (a single `HeapEvolves.update` step).
+
+Estimated cost: ~500 LOC of new infrastructure (`HeapEvolves`
+definition and lemmas, the two `_evolves` framing lemmas, the
+`WFCtx` extension, and the `.set` proof itself). Replacing
+`HeapExt` ripples through ~30 sites in `frame`'s proof.
+
+**Why not `BisimSafe`?** A briefly-considered stronger condition
+was `BisimSafe(p) := ∀ old new h, p old new = true → ∀ n,
+ValVis_aux n old new h h`. `multnExactPolicy` does *not* satisfy
+this: it admits `(.builtinBaseApply, .closure ...)`, which are
+different `Val` constructors and so not bisim-related. The
+*policy-respecting-bisim* condition above is the weaker, satisfied
+condition. Any uniform-framing-across-`.set` follow-up should use
+the weaker condition; an earlier draft of the docs conflated the
+two.
 
 ### Bundle the per-side `frame` hypotheses
 
-`frame.applyDirect` takes 13 hypotheses including four pairs of
-"left-side / right-side" facts (`ValValid op_a` / `ValValid op_b`,
-etc.). A `WFVal v h := ValValid v h ∧ SetFreeVal v` and
-`WFList vs h := ListValValid vs h ∧ SetFreeListVal vs` would
-collapse those pairs into single fields, halving the visible
-hypothesis count. The proof body would destructure at IH callsites
-— a wash on internal LOC, but a real win on signature legibility.
-
-### Replace `HeapExt` with the universal `HeapEvolves`
-
-Even within Path A, `HeapExt`'s prefix-shape forces several
-compose-and-destructure-and-recompose dances in `frame`. The
-fully-monotonic `HeapEvolves` (which subsumes `HeapExt` and
-incidentally enables Path B) would simplify these. Worth doing
-even without Path B, just for cleanup.
+`frame.applyDirect` takes pairs of "left-side / right-side" facts
+(`ValValid op_a` / `ValValid op_b`, `ListValValid args_a` /
+`ListValValid args_b`, etc.). A `WFVal v h := ValValid v h ∧ ...`
+and `WFList vs h := ListValValid vs h ∧ ...` would collapse those
+pairs into single fields, halving the visible hypothesis count.
+The proof body would destructure at IH callsites — a wash on
+internal LOC, but a real win on signature legibility.
 
 ### Decompose `Bisim.lean`
 
-`Bisim.lean` is ~3500 LOC in one file. Natural splits:
+`Bisim.lean` is ~3300 LOC in one file. Natural splits:
 - `Bisim/ValVis.lean` — `ValVis_aux` / `EnvVis_aux` definitions
   and basic lemmas.
 - `Bisim/Validity.lean` — `ValValid` / `HeapValid` / `EnvValid`
   + extension lemmas.
-- `Bisim/SetFree.lean` — `SetFreeExpr` / `SetFreeVal` /
-  `HeapSetFree` + preservation lemmas.
 - `Bisim/Closed.lean` — `closedValB` + reflexivity lemmas.
 - `Bisim/PrimBisim.lean` — `applyPrim_bisim` (the ~600 LOC piece).
 - `Bisim/AllocChain.lean` — `alloc_chain_bisim`.
-- `Bisim/Frame.lean` — `WFCtx` + `FrameStmt` + the 1500-line
-  `frame` proof itself.
+- `Bisim/Frame.lean` — `WFCtx` + `FrameStmt` + the `frame` proof
+  itself.
 
 The `frame` mutual-induction structure forces some interleaving,
 but the file split is worth it for incremental compilation alone.
@@ -405,14 +379,20 @@ would relate operationally-equivalent closures regardless of
 syntactic shape. The CE relation defined operationally on
 `callAsBaseApply` is already this shape; lifting it to a closed
 logical relation would let the framing theorem cover
-operationally-equivalent installs (which is exactly what the
-*Concessions* section argued was unprovable structurally).
+operationally-equivalent installs.
 
-This is the deepest follow-up. It would make Path A's set-free
-restriction unnecessary: a logical-relations framing theorem
-would handle reflective `.set` on operationally-CE policies
-*including* `multnExactPolicy`. Estimated: a major redo, several
-thousand LOC, and a much stronger end result.
+This is the deepest follow-up. It would let `frame` handle
+reflective `.set` on operationally-CE policies *including*
+`multnExactPolicy` (where structural `ValVis` between
+`.builtinBaseApply` and a multn closure is `False` by inversion).
+Estimated: a major redo, several thousand LOC, and a much
+stronger end result. Versus the `HeapEvolves` follow-up
+(generalizing the infrastructure / closing the `.set` case),
+this is more general but also much more work — `HeapEvolves`
+already gets framing-across-`.set` for the policies in
+`verifiedTable` since they all satisfy policy-respecting-bisim;
+logical relations would add coverage for hypothetical policies
+where the policy itself would need a behavioral specification.
 
 ### Mechanize Black's full meta-tower
 
@@ -527,9 +507,10 @@ The repo is named `lean-green` because it's the second iteration
 of `lean-black`. The first iteration's lessons (refinements
 documented under DESIGN.md / *Refinements*) all influenced this
 iteration's design. A natural third iteration —
-`lean-blue`? `lean-black-2`? — could start fresh with the Path A /
-Path B / logical-relations design space mapped out, choosing the
-trade-off that fits the next stage of the project's ambitions.
+`lean-blue`? `lean-black-2`? — could start fresh with the
+`HeapEvolves`-vs-logical-relations design space mapped out,
+choosing the trade-off that fits the next stage of the project's
+ambitions.
 
 ---
 

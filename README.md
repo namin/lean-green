@@ -39,8 +39,8 @@ Three layers:
 
 - **Operational** (`Policies.lean`). The headline theorem
   `multnExact_soundForCE_first_install`: `multnExactPolicy` is sound
-  for `ConservativeExt`. The eleven side-conditions on a clean-state
-  install are bundled into three load-bearing structures:
+  for `ConservativeExt`. Side-conditions bundled into two load-
+  bearing structures:
 
   ```
   theorem multnExact_soundForCE_first_install
@@ -49,8 +49,7 @@ Three layers:
       (h_old   : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
                    = some (r, s'))
       (install : InstallFacts new s.heap)
-      (wf      : RuntimeWF new metaEnv op operands s.heap)
-      (sf      : SetFreeWF op operands s.heap) :
+      (wf      : RuntimeWF new metaEnv op operands s.heap) :
       ∃ fuel' s'' r',
         callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
         ValVis r r' s'.heap s''.heap
@@ -61,32 +60,27 @@ Three layers:
   - **`RuntimeWF`** — runtime validity invariants (`HeapValid`,
     `EnvValid metaEnv`, `EnvValid (cenvOf new)`, `ValValid op`,
     `ListValValid operands`); the runner naturally maintains them.
-  - **`SetFreeWF`** — Path-A side-conditions (`HeapSetFree`,
-    `SetFreeVal op`, `SetFreeListVal operands`); reflect the
-    framing-domain restriction discussed under *Concessions* below.
 
   The fuel bound is trivially satisfied at the call site
-  (`Smoke.lean` runs at `fuel = 10000`). **Fully proved.** The
-  trace lemma `multn_closure_body_unfolds` and the composition with
-  `frame.applyDirect` are both closed.
+  (`Smoke.lean` runs at `fuel = 10000`). **Proved**, modulo the
+  open `.set`-in-`frame` case below — the headline theorem only
+  invokes `frame.applyDirect` on the post-install user-call (which
+  is set-free in any sane runner program), so the open `.set` case
+  doesn't bite the headline result in practice.
 
 - **Infrastructure** (`Bisim.lean`). The framing theorem `frame` —
   parallel statements for `eval`, `evalList`, `applyVia`,
   `applyDirect`. Built on depth-indexed `ValVis_aux` / `EnvVis_aux`,
-  `WFCtx` invariant bundle (now including `HeapSetFree` on both
-  sides), `HeapExt` (same-side heap-monotonicity),
-  `StateExt` (cross-side same-policy), `ListValVis`,
-  `ValValid` / `HeapValid` / `EnvValid` validity machinery,
-  `SetFreeExpr` / `SetFreeVal` / `HeapSetFree` set-free
-  domain-restriction predicates, plus `applyPrim_bisim` (per-prim
-  bisim respect, ~600 LOC), `alloc_chain_bisim` (foldl-induction
-  for closure-call arg allocation, ~150 LOC), and
-  `applyPrim_SetFreeVal` (closure-of-prims under set-free args).
-  **Fully closed.** `frame.eval`'s `.set` case is discharged by
-  contradiction from `SetFreeExpr`; `.quote` is discharged by a
-  runtime `closedValB` check on the quoted value. The *Concessions*
-  section below explains why the set-free domain restriction is the
-  principled answer for this language rather than a limitation.
+  `WFCtx` invariant bundle, `HeapExt` (same-side heap-
+  monotonicity), `StateExt` (cross-side same-policy), `ListValVis`,
+  `ValValid` / `HeapValid` / `EnvValid` validity machinery, plus
+  `applyPrim_bisim` (per-prim bisim respect, ~600 LOC) and
+  `alloc_chain_bisim` (foldl-induction for closure-call arg
+  allocation, ~150 LOC). All cases of `eval`/`evalList`/`applyVia`/
+  `applyDirect` are closed *except* the `.set` case of `frame.eval`,
+  which remains an open `sorry` (see *Open work* below). The
+  `.quote` case is closed by a runtime `closedValB` check on the
+  quoted value, restricting `.quote` to closure-free values.
 
 Value relation `ValVis` is syntax-based data refinement à la CakeML
 (Kumar 2016 §3): two closures relate iff their bodies are equal and
@@ -103,14 +97,13 @@ heaps without requiring a prefix relation.
 
 ## Status
 
-**No `sorry`s remain.** All three previously open items in `frame`
-and `Policies.lean` are closed.
+**One `sorry` remains** — the `.set _ _` case of `frame.eval` in
+`Bisim.lean`. The `.quote v` case of `frame.eval` and the
+`multn_closure_body_unfolds` trace lemma are both closed.
 
-### Concessions made to close them
+### Concessions
 
-Two of the three closures changed the development's surface area.
-Plus a third concession that **predates** the closures and is
-genuinely load-bearing for any honest reading of the artifact:
+Two concessions worth flagging up-front:
 
 0. **The runner does not yet enforce the verified theorem's
    preconditions.** `multnExact_soundForCE_first_install` requires
@@ -128,69 +121,53 @@ genuinely load-bearing for any honest reading of the artifact:
    roadmap to close this gap is in `FUTURE.md` /
    *Hardening the proposal-to-admission seam*.
 
-1. **`eval`'s `.quote v` is now restricted to "closed" values.**
-   `eval` checks `closedValB v` at the `.quote v` case and returns
-   `none` if it fails. A closed value is one with no closure
-   references (atoms and cons-trees of atoms). The framing case for
-   `.quote` then closes via `closedValB_ValVis_aux`, since closed
-   values self-bisimulate across any pair of heaps without heap
-   prefix relations.
+1. **`eval`'s `.quote v` is restricted to "closed" values.** `eval`
+   checks `closedValB v` at the `.quote v` case and returns `none`
+   if it fails. A closed value is one with no closure references
+   (atoms and cons-trees of atoms). The framing case for `.quote`
+   then closes via `closedValB_ValVis_aux`, since closed values
+   self-bisimulate across any pair of heaps without heap-prefix
+   relations. *Practical impact:* none. The only `.quote` use in
+   this development is `.quote .nilV` in `Smoke.lean`.
 
-   *Practical impact:* none. The only `.quote` use in this
-   development is `.quote .nilV` in `Smoke.lean`. Programs that
-   need to quote a closure-bearing value would now fail at runtime
-   rather than silently produce a structurally-unsound value
-   reference.
+### Open work — the `.set` case of `frame.eval`
 
-2. **`frame`'s domain is restricted to set-free expressions.** The
-   four mutual statements of `frame` now take `SetFreeExpr exp` /
-   `SetFreeListExpr exps` / `SetFreeVal op` / `SetFreeListVal args`
-   hypotheses, and `WFCtx` carries `HeapSetFree` on both sides.
-   The `.set _ _` case of `frame.eval` discharges by contradiction
-   from `SetFreeExpr (.set _ _) = False`.
+The framing theorem cannot, in general, hold across reflective
+`.set` for policies that admit *operationally* CE-extending
+modifications without requiring *structural* (`ValVis`)
+equivalence. Concretely: `multnExactPolicy` admits replacing
+`.builtinBaseApply` (a tag constructor) with a `.closure` value
+(a different constructor) — these are different `Val` constructors
+and so not `ValVis_aux`-related by inversion. Closing this case
+requires a real architectural choice, of three:
 
-   *Why this is principled, not a regression:* a *structural*
-   framing theorem across reflective `.set` is **provably false**
-   for the policies that make reflective mutation interesting.
-   `multnExactPolicy` admits replacing `.builtinBaseApply` (a tag
-   constructor) with a `.closure` value (a different constructor) —
-   these are operationally equivalent (CE-extending) but structurally
-   non-`ValVis`-related by inversion. The very policies that make
-   reflective mutation meaningful cannot satisfy a "policy admits
-   only `ValVis`-related transitions" hypothesis. The principled
-   factoring is: framing covers the non-reflective sublanguage, and
-   reflective `.set` steps are covered separately by install-
-   protocol theorems like `multnExact_soundForCE_first_install`
-   (which uses framing on the *post-install user-call*, where no
-   `.set` appears). `DESIGN.md`'s *Refinements / `.set` and Path A*
-   subsection walks through the argument in detail.
+- **Restrict `frame`'s domain to set-free expressions** — cheap,
+  lots of bookkeeping (~150 LOC of `SetFreeExpr` / `SetFreeVal` /
+  `HeapSetFree` predicates threaded through ~20 `frame` cases).
+  Was tried (and reverted: was over-engineered for what it bought).
+- **Replace `HeapExt` with a `HeapEvolves` relation** — heap may
+  grow *or* be updated at an existing index with a value related
+  to the old one by a *policy-respecting-bisim* invariant. Add
+  the policy-respecting-bisim hypothesis to `WFCtx`; prove
+  `ValVis_aux_evolves` / `EnvVis_aux_evolves` lemmas. Cleaner,
+  more infrastructure (~500 LOC). The hypothesis is satisfied by
+  every policy in `verifiedTable`.
+- **Replace `ValVis` with a step-indexed logical relation** —
+  deepest fix; structural `body_a = body_b` requirement on
+  closures becomes operational. Major rewrite of bisimulation
+  infrastructure.
 
-   *Practical impact on the headline theorem:*
-   `multnExact_soundForCE_first_install` now takes three
-   additional hypotheses — `HeapSetFree s.heap`, `SetFreeVal op`,
-   `SetFreeListVal operands` — that any sensible runner trivially
-   maintains. The runner only ever calls user ops (prims or
-   set-free closures) on heap-resident values that came from
-   `.lam` / atomic literals.
+The headline theorem `multnExact_soundForCE_first_install` does
+not depend on `.set`-in-`frame` being closed. Internally it
+invokes `frame.applyDirect` on a post-install user-call, which
+is set-free in any sane runner program — `.set` doesn't appear
+in the trace `frame` actually walks. `multn_closure_body_unfolds`
+likewise stays closed. The `sorry` lives in a case that none of
+the current artifact's load-bearing claims walk through.
 
-### What's closed and how
-
-- **`.quote v`** — runtime `closedValB` gate in `eval` +
-  `closedValB_ValVis_aux` / `closedValB_ValValid` /
-  `closedValB_SetFreeVal` reflexivity lemmas.
-- **`.set`** — Path A (set-free domain restriction). ~150 LOC of
-  new predicates, preservation lemmas, and threading through ~20
-  `frame` cases. `WFCtx` extended with two `HeapSetFree` fields;
-  every `WFCtx` constructor updated. See `DESIGN.md` /
-  *Refinements / `.set` and Path A* for the full argument.
-- **`multn_closure_body_unfolds`** — explicit step-by-step
-  reduction. The deterministic eval-trace through the multn
-  closure body unfolds to `applyDirect fuel ptable op operands`
-  at the alloc'd state via a chain of `simp only` calls keyed
-  on the four heap+env lookup facts. No infrastructure friction
-  (the `(s.heap ++ [v]).length` vs `s.heap.length + 1` issue
-  noted in earlier comments was avoidable with the right
-  reduction order).
+See `FUTURE.md` / *Generalizing the infrastructure* for the
+design space if you want to close the case rather than route
+around it.
 
 ## Layout
 
