@@ -563,10 +563,16 @@ theorem ValVis_aux_update : ∀ (n : Nat) (v_a v_b : Val) (h_a h_b : Heap)
     HeapValid h_a → HeapValid h_b →
     h_a.length = h_b.length →
     ValValid v_a h_a → ValValid v_b h_b →
-    -- new values bisim-related at the updated heap pair, at every depth
-    (∀ k, ValVis_aux k newVal_a newVal_b
-                       (Heap.update h_a idx newVal_a)
-                       (Heap.update h_b idx newVal_b)) →
+    -- new values bisim-related at the updated heap pair, at depths < n.
+    -- This is the STRICTLY BOUNDED form (was `∀ k, ...` universal): the
+    -- closure case only needs h_vis_new at depths < n (used at depth
+    -- n-1 in `EnvVis_aux_update`, and recursively at depths < n-1).
+    -- The strict bound enables a depth-induction self-update lemma
+    -- where the caller constructs h_vis_new from IH at strictly
+    -- smaller depths (without needing the current depth's result).
+    (∀ k, k < n → ValVis_aux k newVal_a newVal_b
+                              (Heap.update h_a idx newVal_a)
+                              (Heap.update h_b idx newVal_b)) →
     ValValid newVal_a (Heap.update h_a idx newVal_a) →
     ValValid newVal_b (Heap.update h_b idx newVal_b) →
     ValVis_aux n v_a v_b h_a h_b →
@@ -581,18 +587,28 @@ theorem ValVis_aux_update : ∀ (n : Nat) (v_a v_b : Val) (h_a h_b : Heap)
   | _ + 1, .builtinBaseApply, .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, _ => trivial
   | n + 1, .cons x_a y_a, .cons x_b y_b, h_a, h_b, idx, newVal_a, newVal_b,
       hh_a, hh_b, hlen, hv_a, hv_b, h_vis_new, hv_new_a, hv_new_b, h_vis =>
+      -- Recursive .cons calls at depth n: weaken from `< n+1` to `< n`.
+      -- (k < n implies k < n+1 by Nat.lt_succ_of_lt.)
       ⟨ValVis_aux_update n x_a x_b h_a h_b idx newVal_a newVal_b
-          hh_a hh_b hlen hv_a.1 hv_b.1 h_vis_new hv_new_a hv_new_b h_vis.1,
+          hh_a hh_b hlen hv_a.1 hv_b.1
+          (fun k h_lt => h_vis_new k (Nat.lt_succ_of_lt h_lt))
+          hv_new_a hv_new_b h_vis.1,
        ValVis_aux_update n y_a y_b h_a h_b idx newVal_a newVal_b
-          hh_a hh_b hlen hv_a.2 hv_b.2 h_vis_new hv_new_a hv_new_b h_vis.2⟩
+          hh_a hh_b hlen hv_a.2 hv_b.2
+          (fun k h_lt => h_vis_new k (Nat.lt_succ_of_lt h_lt))
+          hv_new_a hv_new_b h_vis.2⟩
   | n + 1, .closure ps_a body_a cenv_a, .closure ps_b body_b cenv_b,
       h_a, h_b, idx, newVal_a, newVal_b,
       hh_a, hh_b, hlen, hv_a, hv_b, h_vis_new, hv_new_a, hv_new_b, h_vis =>
       -- ValValid on closure unfolds to EnvValid on cenv. Cenv equality
       -- (`h_vis.2.2.1`) is what feeds `EnvVis_aux_update`'s `env_eq`.
+      -- Outer bound is `< n+1` (= `≤ n`); EnvVis_aux_update at depth n
+      -- takes bound `≤ n`. Convert via `Nat.lt_succ_iff.mp`.
       ⟨h_vis.1, h_vis.2.1, h_vis.2.2.1,
        EnvVis_aux_update n cenv_a cenv_b h_a h_b idx newVal_a newVal_b
-          hh_a hh_b hlen hv_a hv_b h_vis.2.2.1 h_vis_new hv_new_a hv_new_b h_vis.2.2.2⟩
+          hh_a hh_b hlen hv_a hv_b h_vis.2.2.1
+          (fun k h_le => h_vis_new k (Nat.lt_succ_of_le h_le))
+          hv_new_a hv_new_b h_vis.2.2.2⟩
   -- Mismatched constructor pairs at depth ≥ 1: `h_vis` is `False`.
   | _ + 1, .num _,            .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
   | _ + 1, .num _,            .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
@@ -658,9 +674,9 @@ theorem EnvVis_aux_update (n : Nat) :
       h_a.length = h_b.length →
       EnvValid env_a h_a → EnvValid env_b h_b →
       env_a = env_b →   -- structural equality (lookup_eq gives i_a = i_b)
-      (∀ k, ValVis_aux k newVal_a newVal_b
-                         (Heap.update h_a idx newVal_a)
-                         (Heap.update h_b idx newVal_b)) →
+      (∀ k, k ≤ n → ValVis_aux k newVal_a newVal_b
+                                 (Heap.update h_a idx newVal_a)
+                                 (Heap.update h_b idx newVal_b)) →
       ValValid newVal_a (Heap.update h_a idx newVal_a) →
       ValValid newVal_b (Heap.update h_b idx newVal_b) →
       EnvVis_aux n env_a env_b h_a h_b →
@@ -690,7 +706,7 @@ theorem EnvVis_aux_update (n : Nat) :
         subst h_idx
         rw [Heap.update_get_eq h_a i_a newVal_a h_lt_a]
         rw [Heap.update_get_eq h_b i_a newVal_b h_lt_b]
-        exact h_vis_new n
+        exact h_vis_new n (Nat.le_refl n)
       · -- Both lookups give an unchanged cell.
         cases hp_a : h_a[i_a]? with
         | none =>
@@ -709,9 +725,12 @@ theorem EnvVis_aux_update (n : Nat) :
                 rw [hp_a, hp_b] at h_x
                 have hv_va : ValValid v_a h_a := hh_a i_a v_a hp_a
                 have hv_vb : ValValid v_b h_b := hh_b i_a v_b hp_b
+                -- ValVis_aux_update at depth n needs bound `< n`. We have
+                -- `≤ n` (EnvVis's outer bound). Weaken: k < n → k ≤ n.
                 exact ValVis_aux_update n v_a v_b h_a h_b idx
                   newVal_a newVal_b hh_a hh_b hlen hv_va hv_vb
-                  h_vis_new hv_new_a hv_new_b h_x
+                  (fun k h_lt => h_vis_new k (Nat.le_of_lt h_lt))
+                  hv_new_a hv_new_b h_x
 
 end
 
@@ -3110,13 +3129,57 @@ theorem frame : ∀ n, FrameStmt n := by
                     -- with idx updated to v_a / v_b respectively). The
                     -- four sub-cases below all rely on this. Punted as
                     -- a single small lemma to be filled in.
+                    -- Validity at NEW heaps (length-preserved by Heap.update).
+                    have hv_va_new0 :
+                        ValValid v_a (s_a_inner.heap.update idx v_a) :=
+                      ValValid.length_mono v_a hv_va
+                        (Nat.le_of_eq (Heap.update_length _ _ _).symm)
+                    have hv_vb_new0 :
+                        ValValid v_b (s_b_inner.heap.update idx v_b) :=
+                      ValValid.length_mono v_b hv_vb
+                        (Nat.le_of_eq (Heap.update_length _ _ _).symm)
+                    -- Self-update preserves universal-depth bisim.
+                    -- Prove the strengthened form `∀ k ≤ K, ValVis_aux k`
+                    -- by induction on K, then specialize to extract at
+                    -- each k. The strengthening ensures that at K=N+1,
+                    -- the IH at K=N already provides bisim at all
+                    -- depths ≤ N, which is exactly what
+                    -- `ValVis_aux_update` at depth N+1 (bound `< N+1`)
+                    -- needs as its precondition.
+                    have h_vis_v_at_new_strong :
+                        ∀ K k, k ≤ K → ValVis_aux k v_a v_b
+                              (s_a_inner.heap.update idx v_a)
+                              (s_b_inner.heap.update idx v_b) := by
+                      intro K
+                      induction K with
+                      | zero =>
+                          intro k h_le
+                          have : k = 0 := Nat.le_zero.mp h_le
+                          subst this
+                          trivial
+                      | succ N ih =>
+                          intro k h_le
+                          by_cases h_le_N : k ≤ N
+                          · exact ih k h_le_N
+                          · -- k > N and k ≤ N+1 → k = N+1.
+                            have h_eq : k = N + 1 := by omega
+                            subst h_eq
+                            -- Apply ValVis_aux_update at depth N+1.
+                            apply ValVis_aux_update (N+1) v_a v_b
+                              s_a_inner.heap s_b_inner.heap idx v_a v_b
+                              h_ctx_inner.hv_a h_ctx_inner.hv_b
+                              h_ctx_inner.heap_len_eq hv_va hv_vb
+                              ?_ hv_va_new0 hv_vb_new0 (h_vv_v (N+1))
+                            -- Precondition: ∀ k' < N+1, ValVis_aux k' at NEW.
+                            -- = ∀ k' ≤ N, ValVis_aux k' at NEW. = ih.
+                            intro k' h_lt
+                            exact ih k' (Nat.le_of_lt_succ h_lt)
                     have h_vis_v_at_new :
                         ∀ k, ValVis_aux k v_a v_b
                               (s_a_inner.heap.update idx v_a)
                               (s_b_inner.heap.update idx v_b) := by
-                      sorry  -- self-update preserves bisim (provable by
-                             -- depth induction on k using the existing
-                             -- `ValVis_aux_update` infrastructure).
+                      intro k
+                      exact h_vis_v_at_new_strong k k (Nat.le_refl k)
                     have hv_va_new :
                         ValValid v_a (s_a_inner.heap.update idx v_a) :=
                       ValValid.length_mono v_a hv_va
@@ -3149,7 +3212,7 @@ theorem frame : ∀ n, FrameStmt n := by
                           s_a_inner.heap s_b_inner.heap idx v_a v_b
                           h_ctx_inner.hv_a h_ctx_inner.hv_b
                           h_ctx_inner.heap_len_eq hev_a' hev_b'
-                          h_env_eq' h_vis_v_at_new
+                          h_env_eq' (fun k _ => h_vis_v_at_new k)
                           hv_va_new hv_vb_new h_env_vis
                       · intro nV v_x v_y hv_x hv_y h_v_vis
                         -- Apply ValVis_aux_update at depth nV on (v_x, v_y).
@@ -3157,7 +3220,8 @@ theorem frame : ∀ n, FrameStmt n := by
                           s_a_inner.heap s_b_inner.heap idx v_a v_b
                           h_ctx_inner.hv_a h_ctx_inner.hv_b
                           h_ctx_inner.heap_len_eq hv_x hv_y
-                          h_vis_v_at_new hv_va_new hv_vb_new h_v_vis
+                          (fun k _ => h_vis_v_at_new k)
+                          hv_va_new hv_vb_new h_v_vis
                     -- Now case-analyze on isMetaMutation x env_a metaEnv.
                     by_cases h_meta_mut : isMetaMutation x env_a metaEnv = true
                     · -- META MUTATION CASE.
