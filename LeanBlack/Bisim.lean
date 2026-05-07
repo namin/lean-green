@@ -4904,6 +4904,107 @@ def shift_heap (cutoff : Nat) (padding : Heap) (h : Heap) : Heap :=
 def shift_state (cutoff : Nat) (padding : Heap) (s : RunState) : RunState :=
   { heap := shift_heap cutoff padding s.heap, policy := s.policy }
 
+/-! ## Injectivity of shift -/
+
+theorem shift_idx_injective (cutoff offset : Nat) :
+    ∀ i j, shift_idx cutoff offset i = shift_idx cutoff offset j → i = j := by
+  intro i j h
+  unfold shift_idx at h
+  by_cases hi : i < cutoff
+  · by_cases hj : j < cutoff
+    · rw [if_pos hi, if_pos hj] at h; exact h
+    · rw [if_pos hi, if_neg hj] at h; omega
+  · by_cases hj : j < cutoff
+    · rw [if_neg hi, if_pos hj] at h; omega
+    · rw [if_neg hi, if_neg hj] at h; omega
+
+mutual
+  theorem shift_val_injective (cutoff offset : Nat) :
+      ∀ a b : Val, shift_val cutoff offset a = shift_val cutoff offset b → a = b
+    | .num _,   .num _,   h => by simp [shift_val] at h; exact h ▸ rfl
+    | .num _,   .bool _,  h => by simp [shift_val] at h
+    | .num _,   .nilV,    h => by simp [shift_val] at h
+    | .num _,   .sym _,   h => by simp [shift_val] at h
+    | .num _,   .cons _ _, h => by simp [shift_val] at h
+    | .num _,   .prim _,  h => by simp [shift_val] at h
+    | .num _,   .builtinBaseApply, h => by simp [shift_val] at h
+    | .num _,   .closure _ _ _, h => by simp [shift_val] at h
+    | .bool _,  .num _,   h => by simp [shift_val] at h
+    | .bool _,  .bool _,  h => by simp [shift_val] at h; exact h ▸ rfl
+    | .bool _,  .nilV,    h => by simp [shift_val] at h
+    | .bool _,  .sym _,   h => by simp [shift_val] at h
+    | .bool _,  .cons _ _, h => by simp [shift_val] at h
+    | .bool _,  .prim _,  h => by simp [shift_val] at h
+    | .bool _,  .builtinBaseApply, h => by simp [shift_val] at h
+    | .bool _,  .closure _ _ _, h => by simp [shift_val] at h
+    | .nilV,    .num _,   h => by simp [shift_val] at h
+    | .nilV,    .bool _,  h => by simp [shift_val] at h
+    | .nilV,    .nilV,    _ => rfl
+    | .nilV,    .sym _,   h => by simp [shift_val] at h
+    | .nilV,    .cons _ _, h => by simp [shift_val] at h
+    | .nilV,    .prim _,  h => by simp [shift_val] at h
+    | .nilV,    .builtinBaseApply, h => by simp [shift_val] at h
+    | .nilV,    .closure _ _ _, h => by simp [shift_val] at h
+    | .sym _,   .num _,   h => by simp [shift_val] at h
+    | .sym _,   .bool _,  h => by simp [shift_val] at h
+    | .sym _,   .nilV,    h => by simp [shift_val] at h
+    | .sym _,   .sym _,   h => by simp [shift_val] at h; exact h ▸ rfl
+    | .sym _,   .cons _ _, h => by simp [shift_val] at h
+    | .sym _,   .prim _,  h => by simp [shift_val] at h
+    | .sym _,   .builtinBaseApply, h => by simp [shift_val] at h
+    | .sym _,   .closure _ _ _, h => by simp [shift_val] at h
+    | .cons _ _, .num _,   h => by simp [shift_val] at h
+    | .cons _ _, .bool _,  h => by simp [shift_val] at h
+    | .cons _ _, .nilV,    h => by simp [shift_val] at h
+    | .cons _ _, .sym _,   h => by simp [shift_val] at h
+    | .cons xa ya, .cons xb yb, h => by
+        simp [shift_val] at h
+        obtain ⟨hx, hy⟩ := h
+        rw [shift_val_injective cutoff offset xa xb hx,
+            shift_val_injective cutoff offset ya yb hy]
+    | .cons _ _, .prim _,  h => by simp [shift_val] at h
+    | .cons _ _, .builtinBaseApply, h => by simp [shift_val] at h
+    | .cons _ _, .closure _ _ _, h => by simp [shift_val] at h
+    | .prim _,  .num _,   h => by simp [shift_val] at h
+    | .prim _,  .bool _,  h => by simp [shift_val] at h
+    | .prim _,  .nilV,    h => by simp [shift_val] at h
+    | .prim _,  .sym _,   h => by simp [shift_val] at h
+    | .prim _,  .cons _ _, h => by simp [shift_val] at h
+    | .prim _,  .prim _,  h => by simp [shift_val] at h; exact h ▸ rfl
+    | .prim _,  .builtinBaseApply, h => by simp [shift_val] at h
+    | .prim _,  .closure _ _ _, h => by simp [shift_val] at h
+    | .builtinBaseApply, .num _,   h => by simp [shift_val] at h
+    | .builtinBaseApply, .bool _,  h => by simp [shift_val] at h
+    | .builtinBaseApply, .nilV,    h => by simp [shift_val] at h
+    | .builtinBaseApply, .sym _,   h => by simp [shift_val] at h
+    | .builtinBaseApply, .cons _ _, h => by simp [shift_val] at h
+    | .builtinBaseApply, .prim _,  h => by simp [shift_val] at h
+    | .builtinBaseApply, .builtinBaseApply, _ => rfl
+    | .builtinBaseApply, .closure _ _ _, h => by simp [shift_val] at h
+    | .closure _ _ _, .num _,   h => by simp [shift_val] at h
+    | .closure _ _ _, .bool _,  h => by simp [shift_val] at h
+    | .closure _ _ _, .nilV,    h => by simp [shift_val] at h
+    | .closure _ _ _, .sym _,   h => by simp [shift_val] at h
+    | .closure _ _ _, .cons _ _, h => by simp [shift_val] at h
+    | .closure _ _ _, .prim _,  h => by simp [shift_val] at h
+    | .closure _ _ _, .builtinBaseApply, h => by simp [shift_val] at h
+    | .closure psa bdya cenva, .closure psb bdyb cenvb, h => by
+        simp [shift_val] at h
+        obtain ⟨hps, hbdy, hcenv⟩ := h
+        rw [hps, hbdy, shift_env_injective cutoff offset cenva cenvb hcenv]
+
+  theorem shift_env_injective (cutoff offset : Nat) :
+      ∀ a b : Env, shift_env cutoff offset a = shift_env cutoff offset b → a = b
+    | .nil, .nil, _ => rfl
+    | .nil, .cons _ _ _, h => by simp [shift_env] at h
+    | .cons _ _ _, .nil, h => by simp [shift_env] at h
+    | .cons name_a idx_a rest_a, .cons name_b idx_b rest_b, h => by
+        simp [shift_env] at h
+        obtain ⟨hname, hidx, hrest⟩ := h
+        rw [hname, shift_idx_injective cutoff offset idx_a idx_b hidx,
+            shift_env_injective cutoff offset rest_a rest_b hrest]
+end
+
 /-! ## Structural facts about shift -/
 
 theorem shift_idx_below {cutoff offset i : Nat} (h : i < cutoff) :
@@ -5506,6 +5607,7 @@ private theorem valVis_weak_self_shift (cutoff : Nat) (padding : Heap)
 def PolicyRespectsShift (cutoff : Nat) (padding : Heap) (p : BlackPolicy) : Prop :=
   ∀ (target : String) (idx : Nat) (env metaEnv : Env)
     (heap : Heap) (oldVal new : Val),
+    cutoff ≤ heap.length →
     p { target := target, heap := heap, env := env,
         metaEnv := metaEnv, index := idx } oldVal new =
     p { target := target,
@@ -6924,7 +7026,7 @@ private theorem shift_respect (cutoff : Nat) (padding : Heap) :
                             -- This is exactly the contrapositive direction of
                             -- `PolicyRespectsShift cutoff padding s.policy` applied at the
                             -- relevant arguments.
-                            exact (hresp_init x idx env metaEnv s1.heap oldVal v).symm
+                            exact (hresp_init x idx env metaEnv s1.heap oldVal v h_cutoff_1).symm
                           -- gate's value on side A.
                           split at h_eval
                           · -- gate accepted on A.

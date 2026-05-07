@@ -133,6 +133,12 @@ theorem rejectAll_respects_bisim : PolicyRespectsBisim rejectAll := by
   intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
   rfl
 
+/-- `rejectAll` trivially respects shift — both sides return `false`. -/
+theorem rejectAll_respects_shift (cutoff : Nat) (padding : Heap) :
+    PolicyRespectsShift cutoff padding rejectAll := by
+  intro _ _ _ _ _ _ _ _
+  rfl
+
 /-! ### Predicates -/
 
 /-- `op` is not a number. Used to split CE into the vacuous numerical
@@ -230,6 +236,96 @@ theorem numGuardPolicy_respects_bisim : PolicyRespectsBisim numGuardPolicy := by
   -- numGuardPolicy ignores `ctx` and `old` — both sides reduce to
   -- the same expression `numGuardPolicy _ _ new_b`.
   rfl
+
+/-- `numGuardPolicy` respects shift. Inspects only `new`'s structural
+    shape; `shift_val` preserves all constructors (only modifies
+    indices inside closure cenvs, which the policy doesn't read), so
+    the pattern matches give identical results. -/
+theorem numGuardPolicy_respects_shift (cutoff : Nat) (padding : Heap) :
+    PolicyRespectsShift cutoff padding numGuardPolicy := by
+  intro _ _ _ _ _ _ new _
+  unfold numGuardPolicy
+  cases new with
+  | num _ => rfl
+  | bool _ => rfl
+  | nilV => rfl
+  | sym _ => rfl
+  | cons _ _ => rfl
+  | prim _ => rfl
+  | builtinBaseApply => rfl
+  | closure ps body cenv =>
+      simp only [shift_val]
+      cases ps with
+      | nil => rfl
+      | cons p1 ps1 =>
+          cases ps1 with
+          | nil => rfl
+          | cons p2 ps2 =>
+              cases ps2 with
+              | nil =>
+                  cases body with
+                  | num _ => rfl
+                  | bool _ => rfl
+                  | quote _ => rfl
+                  | var _ => rfl
+                  | lam _ _ => rfl
+                  | app _ => rfl
+                  | primApp _ _ => rfl
+                  | seq _ => rfl
+                  | em _ => rfl
+                  | letE _ _ _ => rfl
+                  | set _ _ => rfl
+                  | installPolicy _ => rfl
+                  | ifte cond _ _ =>
+                      cases cond with
+                      | num _ => rfl
+                      | bool _ => rfl
+                      | quote _ => rfl
+                      | var _ => rfl
+                      | lam _ _ => rfl
+                      | app _ => rfl
+                      | seq _ => rfl
+                      | em _ => rfl
+                      | letE _ _ _ => rfl
+                      | set _ _ => rfl
+                      | installPolicy _ => rfl
+                      | ifte _ _ _ => rfl
+                      | primApp f args =>
+                          cases f with
+                          | num _ => rfl
+                          | bool _ => rfl
+                          | quote _ => rfl
+                          | lam _ _ => rfl
+                          | app _ => rfl
+                          | primApp _ _ => rfl
+                          | seq _ => rfl
+                          | em _ => rfl
+                          | letE _ _ _ => rfl
+                          | set _ _ => rfl
+                          | installPolicy _ => rfl
+                          | ifte _ _ _ => rfl
+                          | var pred =>
+                              cases args with
+                              | nil => rfl
+                              | cons a as =>
+                                  cases as with
+                                  | nil =>
+                                      cases a with
+                                      | num _ => rfl
+                                      | bool _ => rfl
+                                      | quote _ => rfl
+                                      | lam _ _ => rfl
+                                      | app _ => rfl
+                                      | primApp _ _ => rfl
+                                      | seq _ => rfl
+                                      | em _ => rfl
+                                      | letE _ _ _ => rfl
+                                      | set _ _ => rfl
+                                      | installPolicy _ => rfl
+                                      | ifte _ _ _ => rfl
+                                      | var _ => rfl
+                                  | cons _ _ => rfl
+              | cons _ _ => rfl
 
 /-! ### `multnExactPolicy` — strict multn shape + install-protocol check
 
@@ -413,6 +509,14 @@ theorem multnExactPolicy_respects_bisim : PolicyRespectsBisim multnExactPolicy :
             | none => rfl
             | some idx_n => simp [h_n_eq idx_n h_n]
       · rfl
+
+/-- `multnExactPolicy` respects shift. Mechanical case analysis on
+    the multn shape; the heap lookups via cenv-bound indices commute
+    with shift via `shift_heap_getElem?`, and the equality check
+    `v == oldVal` commutes via `shift_val_injective`. -/
+theorem multnExactPolicy_respects_shift (cutoff : Nat) (padding : Heap) :
+    PolicyRespectsShift cutoff padding multnExactPolicy := by
+  sorry
 
 /-! ## Install-protocol hypotheses -/
 
@@ -714,7 +818,14 @@ theorem multnExact_CE_nonnum_case
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
     (install : InstallFacts .builtinBaseApply new s.heap)
-    (wf : RuntimeWF new metaEnv op operands s.heap) :
+    (wf : RuntimeWF new metaEnv op operands s.heap)
+    (h_heap_deep : HeapDeep s.heap) (h_op_deep : ValDeep op s.heap)
+    (h_operands_deep : ListValDeep operands s.heap)
+    (h_meta_deep : EnvDeep metaEnv s.heap)
+    (h_pt_shift :
+      PolicyTableRespectsShift s.heap.length [op, listToVal operands] ptable)
+    (h_pol_shift :
+      PolicyRespectsShift s.heap.length [op, listToVal operands] s.policy) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis_weak r r' s'.heap s''.heap ∧
@@ -767,18 +878,6 @@ theorem multnExact_CE_nonnum_case
   -- `(s, s_alloc)` framing (which couldn't satisfy `WFCtx.heap_len_eq`)
   -- with a single-side lift, using the *weak* bisim relation that
   -- handles the cenv-shift inherent to fresh allocations.
-  -- Deep-validity hypotheses for the shift-based prefix extension.
-  -- Hold for runtime-built heaps (alloc-only growth + Deep-write `.set`).
-  have h_heap_deep : HeapDeep s.heap := by sorry
-  have h_op_deep : ValDeep op s.heap := by sorry
-  have h_operands_deep : ListValDeep operands s.heap := by sorry
-  have h_meta_deep : EnvDeep metaEnv s.heap := by sorry
-  -- PolicyRespectsShift hypotheses. Provable per verified policy
-  -- (analogous to existing `multnExactPolicy_respects_bisim`).
-  have h_pt_shift : PolicyTableRespectsShift s.heap.length [op, listToVal operands] ptable := by
-    sorry
-  have h_pol_shift : PolicyRespectsShift s.heap.length [op, listToVal operands] s.policy := by
-    sorry
   obtain ⟨r_b, s_b', h_app_b, h_vv_r, h_heap_valid, h_state_eq, h_heap_mono⟩ :=
     applyDirect_heap_extend_weak hresp_pt h_heap hv_op hv_operands
       h_meta_valid hresp_init h_app
@@ -811,7 +910,14 @@ theorem multnExact_soundForCE_first_install
     (h_old : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
         = some (r, s'))
     (install : InstallFacts .builtinBaseApply new s.heap)
-    (wf : RuntimeWF new metaEnv op operands s.heap) :
+    (wf : RuntimeWF new metaEnv op operands s.heap)
+    (h_heap_deep : HeapDeep s.heap) (h_op_deep : ValDeep op s.heap)
+    (h_operands_deep : ListValDeep operands s.heap)
+    (h_meta_deep : EnvDeep metaEnv s.heap)
+    (h_pt_shift :
+      PolicyTableRespectsShift s.heap.length [op, listToVal operands] ptable)
+    (h_pol_shift :
+      PolicyRespectsShift s.heap.length [op, listToVal operands] s.policy) :
     ∃ fuel' s'' r',
       callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
       ValVis_weak r r' s'.heap s''.heap ∧
@@ -826,6 +932,7 @@ theorem multnExact_soundForCE_first_install
       intro n hop_num
       exact hn ⟨n, hop_num⟩
     exact multnExact_CE_nonnum_case h_admit h_fuel h_op hresp_pt hresp_init h_old install wf
+      h_heap_deep h_op_deep h_operands_deep h_meta_deep h_pt_shift h_pol_shift
 
 /-! ## The verified policy table -/
 
@@ -853,4 +960,22 @@ theorem verifiedTable_respects_bisim : PolicyTableRespectsBisim verifiedTable :=
   | 2, hp =>
       simp at hp; subst hp
       exact multnExactPolicy_respects_bisim
+  | n + 3, hp => simp at hp
+
+/-- The verified policy table: every entry respects shift. Composes the
+    three policy-specific shift theorems. -/
+theorem verifiedTable_respects_shift (cutoff : Nat) (padding : Heap) :
+    PolicyTableRespectsShift cutoff padding verifiedTable := by
+  intro idx p hp
+  unfold verifiedTable at hp
+  match idx, hp with
+  | 0, hp =>
+      simp at hp; subst hp
+      exact rejectAll_respects_shift cutoff padding
+  | 1, hp =>
+      simp at hp; subst hp
+      exact numGuardPolicy_respects_shift cutoff padding
+  | 2, hp =>
+      simp at hp; subst hp
+      exact multnExactPolicy_respects_shift cutoff padding
   | n + 3, hp => simp at hp
