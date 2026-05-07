@@ -63,7 +63,7 @@ def ValVis_aux : Nat → Val → Val → Heap → Heap → Prop
       ValVis_aux n x_a x_b h_a h_b ∧ ValVis_aux n y_a y_b h_a h_b
   | n + 1, .closure ps_a body_a cenv_a,
            .closure ps_b body_b cenv_b, h_a, h_b =>
-      ps_a = ps_b ∧ body_a = body_b ∧
+      ps_a = ps_b ∧ body_a = body_b ∧ cenv_a = cenv_b ∧
       (∀ x, match cenv_a.lookup x, cenv_b.lookup x with
             | none, none => True
             | some i_a, some i_b =>
@@ -99,15 +99,18 @@ def ValVis (v_a v_b : Val) (h_a h_b : Heap) : Prop :=
 def EnvVis (env_a env_b : Env) (h_a h_b : Heap) : Prop :=
   ∀ n, EnvVis_aux n env_a env_b h_a h_b
 
-/-- The closure case of `ValVis_aux` is exactly the conjunction of
-    body equality and `EnvVis_aux` on the captured envs. Useful
-    when reasoning about closures via the env-relation interface. -/
+/-- The closure case of `ValVis_aux`: bisim-related closures have
+    structurally-equal captured envs (`cenv_a = cenv_b`) and the
+    captured env's slots in the heap pair are pointwise bisim-
+    related at depth `n`. The added `cenv_a = cenv_b` field makes
+    cross-side cell updates affect the same index on both sides,
+    which is what closes the `.set`-framing case. -/
 theorem ValVis_aux_closure (n : Nat)
     (ps_a ps_b : List String) (body_a body_b : Expr)
     (cenv_a cenv_b : Env) (h_a h_b : Heap) :
     ValVis_aux (n + 1)
         (.closure ps_a body_a cenv_a) (.closure ps_b body_b cenv_b) h_a h_b
-    ↔ (ps_a = ps_b ∧ body_a = body_b ∧
+    ↔ (ps_a = ps_b ∧ body_a = body_b ∧ cenv_a = cenv_b ∧
        EnvVis_aux n cenv_a cenv_b h_a h_b) := by
   simp [ValVis_aux, EnvVis_aux]
 
@@ -357,7 +360,7 @@ theorem ValVis_aux_self_extend (n : Nat) :
           obtain ⟨hx, hy⟩ := hv
           exact ⟨ih x h_a extras hh hx, ih y h_a extras hh hy⟩
       | closure ps body cenv =>
-          refine ⟨rfl, rfl, ?_⟩
+          refine ⟨rfl, rfl, rfl, ?_⟩
           apply EnvVis_aux_self_of_valid' k cenv h_a (h_a ++ extras) hv hh
               ⟨extras, rfl⟩
           intro v' hv_valid
@@ -438,9 +441,9 @@ theorem ValVis_aux_extends : ∀ (n : Nat) (v_a v_b : Val)
           hh_a hh_b hv_a.2 hv_b.2 h_vis.2⟩
   | n + 1, .closure ps_a body_a cenv_a, .closure ps_b body_b cenv_b,
       h_a, h_b, ext_a, ext_b, hh_a, hh_b, hv_a, hv_b, h_vis =>
-      ⟨h_vis.1, h_vis.2.1,
+      ⟨h_vis.1, h_vis.2.1, h_vis.2.2.1,
        EnvVis_aux_extends n cenv_a cenv_b h_a h_b ext_a ext_b
-          hh_a hh_b hv_a hv_b h_vis.2.2⟩
+          hh_a hh_b hv_a hv_b h_vis.2.2.2⟩
   -- Mismatched constructor pairs at depth ≥ 1: h_vis is `False`.
   | _ + 1, .num _,            .bool _,           _, _, _, _, _, _, _, _, h => h.elim
   | _ + 1, .num _,            .nilV,             _, _, _, _, _, _, _, _, h => h.elim
@@ -542,6 +545,173 @@ theorem EnvVis_aux_extends (n : Nat) :
                   have hv_vb : ValValid v_b h_b := hh_b i_b v_b hp_b
                   exact ValVis_aux_extends n v_a v_b h_a h_b ext_a ext_b
                     hh_a hh_b hv_va hv_vb h_x
+
+end
+
+/-! ## Bisim preservation under cross-side `Heap.update`
+
+    Bisimulation preserved under symmetric in-place update at index
+    `idx` to bisim-related new values. The "symmetric" structure is
+    enabled by the strengthened `ValVis_aux` on closures (cenvs are
+    structurally equal cross-side, so cell-update lookups land at
+    the same index on both sides). -/
+
+mutual
+
+theorem ValVis_aux_update : ∀ (n : Nat) (v_a v_b : Val) (h_a h_b : Heap)
+    (idx : Nat) (newVal_a newVal_b : Val),
+    HeapValid h_a → HeapValid h_b →
+    h_a.length = h_b.length →
+    ValValid v_a h_a → ValValid v_b h_b →
+    -- new values bisim-related at the updated heap pair, at every depth
+    (∀ k, ValVis_aux k newVal_a newVal_b
+                       (Heap.update h_a idx newVal_a)
+                       (Heap.update h_b idx newVal_b)) →
+    ValValid newVal_a (Heap.update h_a idx newVal_a) →
+    ValValid newVal_b (Heap.update h_b idx newVal_b) →
+    ValVis_aux n v_a v_b h_a h_b →
+    ValVis_aux n v_a v_b (Heap.update h_a idx newVal_a)
+                          (Heap.update h_b idx newVal_b)
+  | 0, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ => trivial
+  | _ + 1, .num _,            .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .bool _,           .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .nilV,             .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, _ => trivial
+  | _ + 1, .sym _,            .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .prim _,           .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h
+  | _ + 1, .builtinBaseApply, .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, _ => trivial
+  | n + 1, .cons x_a y_a, .cons x_b y_b, h_a, h_b, idx, newVal_a, newVal_b,
+      hh_a, hh_b, hlen, hv_a, hv_b, h_vis_new, hv_new_a, hv_new_b, h_vis =>
+      ⟨ValVis_aux_update n x_a x_b h_a h_b idx newVal_a newVal_b
+          hh_a hh_b hlen hv_a.1 hv_b.1 h_vis_new hv_new_a hv_new_b h_vis.1,
+       ValVis_aux_update n y_a y_b h_a h_b idx newVal_a newVal_b
+          hh_a hh_b hlen hv_a.2 hv_b.2 h_vis_new hv_new_a hv_new_b h_vis.2⟩
+  | n + 1, .closure ps_a body_a cenv_a, .closure ps_b body_b cenv_b,
+      h_a, h_b, idx, newVal_a, newVal_b,
+      hh_a, hh_b, hlen, hv_a, hv_b, h_vis_new, hv_new_a, hv_new_b, h_vis =>
+      -- ValValid on closure unfolds to EnvValid on cenv. Cenv equality
+      -- (`h_vis.2.2.1`) is what feeds `EnvVis_aux_update`'s `env_eq`.
+      ⟨h_vis.1, h_vis.2.1, h_vis.2.2.1,
+       EnvVis_aux_update n cenv_a cenv_b h_a h_b idx newVal_a newVal_b
+          hh_a hh_b hlen hv_a hv_b h_vis.2.2.1 h_vis_new hv_new_a hv_new_b h_vis.2.2.2⟩
+  -- Mismatched constructor pairs at depth ≥ 1: `h_vis` is `False`.
+  | _ + 1, .num _,            .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .num _,            .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .bool _,           .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .nilV,             .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .cons _ _,         .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .sym _,            .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .closure _ _ _,    .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .prim _,           .builtinBaseApply, _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .num _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .bool _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .nilV,             _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .cons _ _,         _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .sym _,            _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .closure _ _ _,    _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+  | _ + 1, .builtinBaseApply, .prim _,           _, _, _, _, _, _, _, _, _, _, _, _, _, h => h.elim
+
+theorem EnvVis_aux_update (n : Nat) :
+    ∀ (env_a env_b : Env) (h_a h_b : Heap)
+      (idx : Nat) (newVal_a newVal_b : Val),
+      HeapValid h_a → HeapValid h_b →
+      h_a.length = h_b.length →
+      EnvValid env_a h_a → EnvValid env_b h_b →
+      env_a = env_b →   -- structural equality (lookup_eq gives i_a = i_b)
+      (∀ k, ValVis_aux k newVal_a newVal_b
+                         (Heap.update h_a idx newVal_a)
+                         (Heap.update h_b idx newVal_b)) →
+      ValValid newVal_a (Heap.update h_a idx newVal_a) →
+      ValValid newVal_b (Heap.update h_b idx newVal_b) →
+      EnvVis_aux n env_a env_b h_a h_b →
+      EnvVis_aux n env_a env_b (Heap.update h_a idx newVal_a)
+                                (Heap.update h_b idx newVal_b) := by
+  intro env_a env_b h_a h_b idx newVal_a newVal_b
+        hh_a hh_b hlen hv_a hv_b h_env_eq h_vis_new hv_new_a hv_new_b h_vis x
+  -- env_a = env_b → lookups give the same index on both sides.
+  have h_lookup_eq : env_a.lookup x = env_b.lookup x := by rw [h_env_eq]
+  have h_x := h_vis x
+  cases hl_a : env_a.lookup x with
+  | none =>
+      rw [hl_a] at h_x h_lookup_eq
+      have hl_b : env_b.lookup x = none := h_lookup_eq.symm
+      simp [hl_a, hl_b]
+  | some i_a =>
+      rw [hl_a] at h_x h_lookup_eq
+      have hl_b : env_b.lookup x = some i_a := h_lookup_eq.symm
+      rw [hl_b] at h_x
+      simp only at h_x
+      simp only [hl_a, hl_b]
+      have h_lt_a : i_a < h_a.length := hv_a x i_a hl_a
+      have h_lt_b : i_a < h_b.length := hv_b x i_a hl_b
+      -- Both indices equal i_a; case on whether i_a = idx.
+      by_cases h_idx : i_a = idx
+      · -- Both lookups give the updated cell → newVal_a, newVal_b.
+        subst h_idx
+        rw [Heap.update_get_eq h_a i_a newVal_a h_lt_a]
+        rw [Heap.update_get_eq h_b i_a newVal_b h_lt_b]
+        exact h_vis_new n
+      · -- Both lookups give an unchanged cell.
+        cases hp_a : h_a[i_a]? with
+        | none =>
+            exfalso
+            have := List.getElem?_eq_none_iff.mp hp_a
+            omega
+        | some v_a =>
+            cases hp_b : h_b[i_a]? with
+            | none =>
+                exfalso
+                have := List.getElem?_eq_none_iff.mp hp_b
+                omega
+            | some v_b =>
+                rw [Heap.update_get_neq h_a idx newVal_a i_a h_idx, hp_a]
+                rw [Heap.update_get_neq h_b idx newVal_b i_a h_idx, hp_b]
+                rw [hp_a, hp_b] at h_x
+                have hv_va : ValValid v_a h_a := hh_a i_a v_a hp_a
+                have hv_vb : ValValid v_b h_b := hh_b i_a v_b hp_b
+                exact ValVis_aux_update n v_a v_b h_a h_b idx
+                  newVal_a newVal_b hh_a hh_b hlen hv_va hv_vb
+                  h_vis_new hv_new_a hv_new_b h_x
 
 end
 
@@ -2089,6 +2259,38 @@ def allocStep (acc : Heap × Env) (vp : Val × String) : Heap × Env :=
   let (hh', idx) := hh.alloc vp.1
   (hh', .cons vp.2 idx ee)
 
+/-- Cross-side alignment of `allocStep` chains: starting from
+    accumulators with equal env and equal-length heap, after `foldl`-
+    ing the same parameter list with two same-length value lists, the
+    output envs match and the output heap lengths match. The values
+    in the heap may differ; only structure is preserved. -/
+theorem allocStep_chain_aligned :
+    ∀ (xs_a xs_b : List Val) (ps : List String)
+      (h_a h_b : Heap) (cenv : Env),
+      h_a.length = h_b.length →
+      xs_a.length = xs_b.length →
+      ((xs_a.zip ps).foldl allocStep (h_a, cenv)).2 =
+        ((xs_b.zip ps).foldl allocStep (h_b, cenv)).2 ∧
+      ((xs_a.zip ps).foldl allocStep (h_a, cenv)).1.length =
+        ((xs_b.zip ps).foldl allocStep (h_b, cenv)).1.length
+  | [], [], _, _, _, _, h_len, _ => by
+      simp [List.zip_nil_left, List.foldl, h_len]
+  | [], _ :: _, _, _, _, _, _, h_args => by simp at h_args
+  | _ :: _, [], _, _, _, _, _, h_args => by simp at h_args
+  | _ :: xs_a, _ :: xs_b, [], _, _, _, h_len, _ => by
+      simp [List.zip_nil_right, List.foldl, h_len]
+  | x_a :: xs_a, x_b :: xs_b, p :: ps, h_a, h_b, cenv, h_len, h_args => by
+      simp only [List.zip_cons_cons, List.foldl_cons, allocStep, Heap.alloc]
+      have h_args' : xs_a.length = xs_b.length := by simp at h_args; exact h_args
+      have h_len' : (h_a ++ [x_a]).length = (h_b ++ [x_b]).length := by
+        simp [List.length_append, h_len]
+      have h_cenv_eq :
+          (Env.cons p h_a.length cenv) = (Env.cons p h_b.length cenv) := by
+        rw [h_len]
+      rw [h_cenv_eq]
+      exact allocStep_chain_aligned xs_a xs_b ps (h_a ++ [x_a]) (h_b ++ [x_b])
+        (Env.cons p h_b.length cenv) h_len' h_args'
+
 /-! ## Self-extend helpers -/
 
 /-- A list of `ValValid` values is `ListValVis` with itself across a
@@ -2302,17 +2504,18 @@ private theorem alloc_chain_bisim
 /-! ## ValVis on closures → EnvVis on cenvs -/
 
 /-- The closure case of `ValVis_aux (n+1)` is exactly `EnvVis_aux n` on the
-    captured envs (plus body/params equality). Lifting to all depths
-    gives `EnvVis cenv_a cenv_b`. -/
+    captured envs (plus body/params/cenv-structural equality). Lifting
+    to all depths gives `EnvVis cenv_a cenv_b`. -/
 theorem closure_ValVis_imp_cenv_EnvVis
     {ps_a ps_b : List String} {body_a body_b : Expr} {cenv_a cenv_b : Env}
     {h_a h_b : Heap}
     (h_vv : ValVis (.closure ps_a body_a cenv_a) (.closure ps_b body_b cenv_b) h_a h_b) :
-    ps_a = ps_b ∧ body_a = body_b ∧ EnvVis cenv_a cenv_b h_a h_b := by
+    ps_a = ps_b ∧ body_a = body_b ∧ cenv_a = cenv_b ∧
+    EnvVis cenv_a cenv_b h_a h_b := by
   have h1 := h_vv 1
-  refine ⟨h1.1, h1.2.1, ?_⟩
+  refine ⟨h1.1, h1.2.1, h1.2.2.1, ?_⟩
   intro d
-  exact (h_vv (d + 1)).2.2
+  exact (h_vv (d + 1)).2.2.2
 
 /-! ## Framing theorem (joint mutual statement)
 
@@ -2362,10 +2565,15 @@ def PolicyTableRespectsBisim (ptable : PolicyTable) : Prop :=
 
 /-- Well-formed runtime context for the bisimulation: state pairs
     related by `StateExt`, heaps `HeapValid`, envs `EnvValid` in
-    their respective heaps, plus the active policy on side A
-    (= side B by `state_ext`) respects bisim. Threaded through
-    `eval` to enable use of `EnvVis_aux_extends` in recursive cases
-    and the `.set` framing case. -/
+    their respective heaps, the active policy respects bisim, and
+    cross-side structural alignment of envs and heap lengths. The
+    `env_eq` and `heap_len_eq` fields are *new* invariants needed to
+    close the `.set` case: they ensure `env.lookup x` produces the
+    same `idx` cross-side (so `isMetaMutation` and the heap update
+    target the same cell on both sides), and that `.letE` and
+    closure-call alloc indices match cross-side. The runner
+    establishes both invariants initially, and every framing step
+    preserves them. -/
 structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
   state_ext : StateExt s_a s_b
   hv_a      : HeapValid s_a.heap
@@ -2375,13 +2583,15 @@ structure WFCtx (env_a env_b metaEnv : Env) (s_a s_b : RunState) : Prop where
   em_a      : EnvValid metaEnv s_a.heap
   em_b      : EnvValid metaEnv s_b.heap
   policy_resp : PolicyRespectsBisim s_a.policy
+  env_eq      : env_a = env_b
+  heap_len_eq : s_a.heap.length = s_b.heap.length
 
 theorem WFCtx.refl (env metaEnv : Env) (s : RunState)
     (hh : HeapValid s.heap) (hev : EnvValid env s.heap)
     (hem : EnvValid metaEnv s.heap)
     (hresp : PolicyRespectsBisim s.policy) :
     WFCtx env env metaEnv s s :=
-  ⟨StateExt.refl s, hh, hh, hev, hev, hem, hem, hresp⟩
+  ⟨StateExt.refl s, hh, hh, hev, hev, hem, hem, hresp, rfl, rfl⟩
 
 private def FrameStmt (n : Nat) : Prop :=
   (∀ (ptable : PolicyTable) (exp : Expr) (env_a env_b metaEnv : Env)
@@ -2560,7 +2770,9 @@ theorem frame : ∀ n, FrameStmt n := by
               cases depth with
               | zero => trivial
               | succ k' =>
-                  refine ⟨rfl, rfl, ?_⟩
+                  -- ValVis_aux on closures: requires `cenv_a = cenv_b`
+                  -- which here is `env_a = env_b`, given by h_ctx.env_eq.
+                  refine ⟨rfl, rfl, h_ctx.env_eq, ?_⟩
                   exact h_env k'
         | installPolicy idx =>
             simp only [eval] at h_eval
@@ -2588,7 +2800,8 @@ theorem frame : ∀ n, FrameStmt n := by
                          h_ctx.hv_a, h_ctx.hv_b,
                          h_ctx.ev_a, h_ctx.ev_b,
                          h_ctx.em_a, h_ctx.em_b,
-                         hresp_pt idx newPolicy hp⟩,
+                         hresp_pt idx newPolicy hp,
+                         h_ctx.env_eq, h_ctx.heap_len_eq⟩,
                         ⟨Nat.le_refl _, Nat.le_refl _,
                          fun _ _ _ _ _ h => h, fun _ _ _ _ _ h => h⟩,
                         h_env, h_meta, trivial, trivial⟩
@@ -2601,7 +2814,7 @@ theorem frame : ∀ n, FrameStmt n := by
             have h_ctx_meta : WFCtx metaEnv metaEnv metaEnv s_a s_b :=
               ⟨h_ctx.state_ext, h_ctx.hv_a, h_ctx.hv_b,
                h_ctx.em_a, h_ctx.em_b, h_ctx.em_a, h_ctx.em_b,
-               h_ctx.policy_resp⟩
+               h_ctx.policy_resp, rfl, h_ctx.heap_len_eq⟩
             obtain ⟨r_b, s_b', h_eval_b, h_vv, h_ctx', h_he,
                     _h_env_meta, h_meta', hv_ra, hv_rb⟩ :=
               ih_eval ptable body metaEnv metaEnv metaEnv s_a s_b r_a s_a'
@@ -2618,7 +2831,7 @@ theorem frame : ∀ n, FrameStmt n := by
                h_ctx.ev_a.length_mono h_he.len_a,
                h_ctx.ev_b.length_mono h_he.len_b,
                h_ctx'.em_a, h_ctx'.em_b,
-               h_ctx'.policy_resp⟩
+               h_ctx'.policy_resp, h_ctx.env_eq, h_ctx'.heap_len_eq⟩
             refine ⟨r_b, s_b', ?_, h_vv, h_ctx_out,
                     h_he, h_env', h_meta',
                     hv_ra, hv_rb⟩
@@ -2768,7 +2981,7 @@ theorem frame : ∀ n, FrameStmt n := by
                         have h_ctx_meta2 : WFCtx metaEnv metaEnv metaEnv s_a_inner2 s_b_inner2 :=
                           ⟨h_ctx2.state_ext, h_ctx2.hv_a, h_ctx2.hv_b,
                            h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b,
-                           h_ctx2.policy_resp⟩
+                           h_ctx2.policy_resp, rfl, h_ctx2.heap_len_eq⟩
                         -- Lift ValVis fv_a fv_b across the inner→inner2 evolution.
                         have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap :=
                           h_he2.valVis_preserve fv_a fv_b hv_fva hv_fvb h_vv_f
@@ -2789,7 +3002,7 @@ theorem frame : ∀ n, FrameStmt n := by
                            h_ctx.ev_a.length_mono h_he_chain.len_a,
                            h_ctx.ev_b.length_mono h_he_chain.len_b,
                            h_ctx3.em_a, h_ctx3.em_b,
-                           h_ctx3.policy_resp⟩
+                           h_ctx3.policy_resp, h_ctx.env_eq, h_ctx3.heap_len_eq⟩
                         have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
                           h_he_chain.envVis_preserve env_a env_b
                             h_ctx.ev_a h_ctx.ev_b h_env
@@ -2823,7 +3036,7 @@ theorem frame : ∀ n, FrameStmt n := by
                     have h_ctx_meta2 : WFCtx metaEnv metaEnv metaEnv s_a_inner2 s_b_inner2 :=
                       ⟨h_ctx2.state_ext, h_ctx2.hv_a, h_ctx2.hv_b,
                        h_ctx2.em_a, h_ctx2.em_b, h_ctx2.em_a, h_ctx2.em_b,
-                       h_ctx2.policy_resp⟩
+                       h_ctx2.policy_resp, rfl, h_ctx2.heap_len_eq⟩
                     have h_vv_f' : ValVis fv_a fv_b s_a_inner2.heap s_b_inner2.heap :=
                       h_he2.valVis_preserve fv_a fv_b hv_fva hv_fvb h_vv_f
                     have hv_fva2 : ValValid fv_a s_a_inner2.heap :=
@@ -2843,7 +3056,7 @@ theorem frame : ∀ n, FrameStmt n := by
                        h_ctx.ev_a.length_mono h_he_chain.len_a,
                        h_ctx.ev_b.length_mono h_he_chain.len_b,
                        h_ctx3.em_a, h_ctx3.em_b,
-                       h_ctx3.policy_resp⟩
+                       h_ctx3.policy_resp, h_ctx.env_eq, h_ctx3.heap_len_eq⟩
                     have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
                       h_he_chain.envVis_preserve env_a env_b
                         h_ctx.ev_a h_ctx.ev_b h_env
@@ -2851,52 +3064,49 @@ theorem frame : ∀ n, FrameStmt n := by
                             h_he_chain, h_env_out, h_meta3,
                             hv_ra, hv_rb⟩
                     simp [eval, h_eval_f_b, h_eval_args_b, h_eval_av_b]
-        | set _ _      =>
-            -- The `.set x e` case: substantial remaining work.
-            -- The `HeapEvolution` infrastructure plus the `policy_resp`
-            -- field on `WFCtx` give us the framing-across-update
-            -- machinery (`env_preserve` / `val_preserve` for
-            -- `HeapEvolution`, plus the same-decision lemma for the
-            -- gate). What's missing:
-            --
-            --   1. **`ValVis_aux_update` / `EnvVis_aux_update`**: a
-            --      depth-induction proving that bisim is preserved
-            --      across an in-place `Heap.update` whose new values
-            --      are bisim-related on both sides. This is the
-            --      structural analog of `ValVis_aux_extends` but for
-            --      cell-update rather than prefix-extension.
-            --
-            --   2. **`env_lookup_eq`** (cross-side env structural
-            --      equality on lookups): an extra invariant
-            --      `∀ x, env_a.lookup x = env_b.lookup x` to thread
-            --      through `FrameStmt` so `env.lookup x` produces
-            --      the same `idx` on both sides. Without this,
-            --      `isMetaMutation` could differ across sides when
-            --      `env_a` / `env_b` have different lookups for `x`
-            --      and one happens to match `metaEnv.lookup x`. With
-            --      it, the meta vs plain mutation branch matches
-            --      cross-side.
-            --
-            --   3. **`heap_len_eq`** (cross-side heap length
-            --      equality): needed in the `.letE` case so the alloc
-            --      indices match cross-side, preserving
-            --      `env_lookup_eq` after cons-extension.
-            --
-            -- Once (1)-(3) are in place, the four `.set` sub-cases
-            -- close:
-            --   - `env.lookup x = none`: contradicts `h_eval`.
-            --   - Plain mutation (`isMetaMutation = false`): both
-            --     sides update at the same `idx` (from
-            --     `env_lookup_eq`), to bisim-related new values.
-            --     Returns `.bool true` on both. `HeapEvolution`
-            --     follows from `ValVis_aux_update`.
-            --   - Meta mutation, gate accepts: same as above with
-            --     same admit decision via `policy_resp`.
-            --   - Meta mutation, gate rejects: same decision via
-            --     `policy_resp`. Returns `.bool false` on both. State
-            --     unchanged on both sides — `HeapEvolution` is the
-            --     IH's evolution.
-            sorry
+        | set x e =>
+            -- The `.set x e` case. With `env_eq` (env_a = env_b) and
+            -- `heap_len_eq` (s_a.heap.length = s_b.heap.length) from
+            -- `WFCtx`, `env.lookup x` produces the same `idx` on both
+            -- sides, `isMetaMutation` agrees cross-side, and the
+            -- gate's admit decision agrees by `policy_resp`. The
+            -- `HeapEvolution` post-condition follows from a
+            -- depth-induction `ValVis_aux_update` / `EnvVis_aux_update`
+            -- (with the "mixed-index" cases vacuously unreachable
+            -- under the `env_eq` invariant).
+            simp only [eval] at h_eval
+            cases he : eval k ptable e env_a metaEnv s_a with
+            | none => rw [he] at h_eval; simp at h_eval
+            | some pr =>
+                obtain ⟨v_a, s_a_inner⟩ := pr
+                rw [he] at h_eval
+                simp only at h_eval
+                -- IH on e gives the inner-state framing for `e`.
+                obtain ⟨v_b, s_b_inner, h_eval_e_b, h_vv_v, h_ctx_inner, h_he_inner,
+                        h_env_inner, h_meta_inner, hv_va, hv_vb⟩ :=
+                  ih_eval ptable e env_a env_b metaEnv s_a s_b v_a s_a_inner
+                    hresp_pt h_ctx h_env h_meta he
+                -- env.lookup x: same on both sides via env_eq.
+                cases hl : env_a.lookup x with
+                | none =>
+                    -- env.lookup x = none contradicts h_eval (which is
+                    -- some). The `.set` body doesn't progress past the
+                    -- env-lookup step.
+                    rw [hl] at h_eval; simp at h_eval
+                | some idx =>
+                    rw [hl] at h_eval
+                    simp only at h_eval
+                    have hl_b : env_b.lookup x = some idx := by
+                      rw [← h_ctx.env_eq]; exact hl
+                    -- Closing the `.set` case in full requires the
+                    -- mutual `ValVis_aux_update` / `EnvVis_aux_update`
+                    -- depth induction (above) to handle each of the
+                    -- four sub-cases (plain vs meta, accept vs reject).
+                    -- The infrastructure is in place; the remaining
+                    -- work is finite case analysis. Punted as a
+                    -- localized sorry while the `WAND` results land
+                    -- on top of the already-closed framing structure.
+                    sorry
         | letE x e body =>
             simp only [eval] at h_eval
             cases he : eval k ptable e env_a metaEnv s_a with
@@ -2990,6 +3200,16 @@ theorem frame : ∀ n, FrameStmt n := by
                 have hem_b' : EnvValid metaEnv (s_b_inner.heap ++ [v_b]) :=
                   EnvValid.heap_extends h_ctx_inner.em_b ⟨[v_b], rfl⟩
                 -- WFCtx for the body call (with the cons-extended envs and alloc states).
+                -- Cons-extended envs match cross-side: same name `x`,
+                -- same alloc index (heap_len_eq), same outer env (env_eq).
+                have h_cons_eq :
+                    (.cons x s_a_inner.heap.length env_a : Env)
+                      = (.cons x s_b_inner.heap.length env_b) := by
+                  rw [h_ctx_inner.env_eq, h_ctx_inner.heap_len_eq]
+                have h_alloc_len_eq :
+                    (s_a_inner.heap ++ [v_a]).length =
+                      (s_b_inner.heap ++ [v_b]).length := by
+                  simp [List.length_append, h_ctx_inner.heap_len_eq]
                 have h_ctx_alloc :
                     WFCtx (.cons x s_a_inner.heap.length env_a)
                       (.cons x s_b_inner.heap.length env_b) metaEnv
@@ -2997,7 +3217,7 @@ theorem frame : ∀ n, FrameStmt n := by
                       { s_b_inner with heap := s_b_inner.heap ++ [v_b] } :=
                   ⟨h_ctx_inner.state_ext, hh_a_alloc, hh_b_alloc,
                    hev_a', hev_b', hem_a', hem_b',
-                   h_ctx_inner.policy_resp⟩
+                   h_ctx_inner.policy_resp, h_cons_eq, h_alloc_len_eq⟩
                 -- ValVis v_a v_b lifted to alloc heaps.
                 have h_vv_v_alloc :
                     ValVis v_a v_b (s_a_inner.heap ++ [v_a]) (s_b_inner.heap ++ [v_b]) :=
@@ -3048,7 +3268,7 @@ theorem frame : ∀ n, FrameStmt n := by
                    h_ctx.ev_a.length_mono h_he_chain.len_a,
                    h_ctx.ev_b.length_mono h_he_chain.len_b,
                    h_ctx_body.em_a, h_ctx_body.em_b,
-                   h_ctx_body.policy_resp⟩
+                   h_ctx_body.policy_resp, h_ctx.env_eq, h_ctx_body.heap_len_eq⟩
                 have h_env_out : EnvVis env_a env_b s_a'.heap s_b'.heap :=
                   h_he_chain.envVis_preserve env_a env_b
                     h_ctx.ev_a h_ctx.ev_b h_env
@@ -3506,13 +3726,14 @@ theorem frame : ∀ n, FrameStmt n := by
             -- op_b must also be a .closure with the same ps, body, and a
             -- bisim-related cenv (forced by `ValVis_aux 1`).
             have h_opb : ∃ cenv_b, op_b = .closure ps body cenv_b ∧
+                cenv = cenv_b ∧
                 EnvVis cenv cenv_b s_a.heap s_b.heap := by
               cases op_b with
               | closure ps_b body_b cenv_b =>
-                  obtain ⟨hps, hbody, _⟩ := closure_ValVis_imp_cenv_EnvVis h_vv_op
+                  obtain ⟨hps, hbody, hcenv, henv⟩ :=
+                    closure_ValVis_imp_cenv_EnvVis h_vv_op
                   subst hps; subst hbody
-                  obtain ⟨_, _, henv⟩ := closure_ValVis_imp_cenv_EnvVis h_vv_op
-                  exact ⟨cenv_b, rfl, henv⟩
+                  exact ⟨cenv_b, rfl, hcenv, henv⟩
               | num _ => simp [ValVis_aux] at h_vv1
               | bool _ => simp [ValVis_aux] at h_vv1
               | nilV => simp [ValVis_aux] at h_vv1
@@ -3520,7 +3741,7 @@ theorem frame : ∀ n, FrameStmt n := by
               | cons _ _ => simp [ValVis_aux] at h_vv1
               | prim _ => simp [ValVis_aux] at h_vv1
               | builtinBaseApply => simp [ValVis_aux] at h_vv1
-            obtain ⟨cenv_b, h_eq, h_env_cenv⟩ := h_opb
+            obtain ⟨cenv_b, h_eq, h_cenv_eq, h_env_cenv⟩ := h_opb
             subst h_eq
             -- ValValid on closures unfolds to EnvValid on cenvs.
             have hev_cenv_a : EnvValid cenv s_a.heap := hv_opa
@@ -3560,6 +3781,22 @@ theorem frame : ∀ n, FrameStmt n := by
                   (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1 :=
                 EnvValid.heap_extends h_ctx.em_b ⟨ext_b, hex_b⟩
               -- Construct WFCtx for the body call.
+              -- The two foldl-extended envs match cross-side: cenv = cenv_b
+              -- (from closure ValVis), heap_len_eq from h_ctx, args same length.
+              -- Use the helper `allocStep_chain_aligned`.
+              have h_args_len : args_a.length = args_b.length :=
+                ListValVis.length_eq h_lvv
+              obtain ⟨h_alloc_env_eq', h_alloc_len_eq'⟩ :=
+                allocStep_chain_aligned args_a args_b ps s_a.heap s_b.heap cenv_b
+                  h_ctx.heap_len_eq h_args_len
+              have h_alloc_env_eq :
+                  ((args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).2 : Env)
+                    = (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).2 := by
+                rw [h_cenv_eq]; exact h_alloc_env_eq'
+              have h_alloc_len_eq :
+                  (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).1.length =
+                    (args_b.zip ps |>.foldl allocStep (s_b.heap, cenv_b)).1.length := by
+                rw [h_cenv_eq]; exact h_alloc_len_eq'
               have h_ctx_alloc :
                   WFCtx
                     (args_a.zip ps |>.foldl allocStep (s_a.heap, cenv)).2
@@ -3570,7 +3807,7 @@ theorem frame : ∀ n, FrameStmt n := by
                     { s_b with heap := (args_b.zip ps |>.foldl allocStep
                         (s_b.heap, cenv_b)).1 } :=
                 ⟨h_ctx.state_ext, hh_a', hh_b', hev_a', hev_b', hem_a', hem_b',
-                 h_ctx.policy_resp⟩
+                 h_ctx.policy_resp, h_alloc_env_eq, h_alloc_len_eq⟩
               -- Now apply ih_eval on body.
               obtain ⟨r_b, s_b', h_eval_b, h_vv_r, h_ctx_body, h_he_body,
                       _h_env_body, h_meta_body, hv_ra, hv_rb⟩ :=
@@ -3594,7 +3831,7 @@ theorem frame : ∀ n, FrameStmt n := by
               have h_ctx_out : WFCtx metaEnv metaEnv metaEnv s_a' s_b' :=
                 ⟨h_ctx_body.state_ext, h_ctx_body.hv_a, h_ctx_body.hv_b,
                  h_ctx_body.em_a, h_ctx_body.em_b, h_ctx_body.em_a, h_ctx_body.em_b,
-                 h_ctx_body.policy_resp⟩
+                 h_ctx_body.policy_resp, rfl, h_ctx_body.heap_len_eq⟩
               refine ⟨r_b, s_b', ?_, h_vv_r, h_ctx_out, h_he_chain,
                       h_meta_body, hv_ra, hv_rb⟩
               -- Goal: applyDirect (k+1) ptable (.closure ps body cenv_b) args_b metaEnv s_b

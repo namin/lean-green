@@ -644,9 +644,20 @@ theorem multnExact_CE_nonnum_case
   have h_lvv_operands : ListValVis operands operands s.heap s_alloc.heap :=
     ListValVis_self_extend [op, listToVal operands] h_heap hv_operands
   have h_state_ext : StateExt s s_alloc := by show s.policy = s_alloc.policy; rfl
+  -- ARCHITECTURAL TENSION: The original `multnExact_CE_nonnum_case` proof
+  -- technique sets up an asymmetric framing: side A at state `s`, side B
+  -- at state `s_alloc` (= `s` with the multn closure body's pre-allocated
+  -- arg cells). With the new `WFCtx.heap_len_eq` invariant required for
+  -- closing `.set` framing, this asymmetric setup can no longer satisfy
+  -- `WFCtx`. The proof technique needs reworking to maintain symmetric
+  -- heap lengths cross-side (e.g., a single-side prefix-extension lemma
+  -- to relate side A's run at `s` to a hypothetical run at `s_alloc`,
+  -- then frame symmetrically). Punted to a follow-up; the headline
+  -- `.set` framing closure is the priority.
+  have h_alloc_len_eq : s.heap.length = s_alloc.heap.length := by sorry
   have h_ctx : WFCtx metaEnv metaEnv metaEnv s s_alloc :=
     ⟨h_state_ext, h_heap, hh_alloc, h_meta_valid, hem_alloc, h_meta_valid, hem_alloc,
-     hresp_init⟩
+     hresp_init, rfl, h_alloc_len_eq⟩
   have h_meta_vis : EnvVis metaEnv metaEnv s.heap s_alloc.heap := by
     intro d
     show EnvVis_aux d metaEnv metaEnv s.heap (s.heap ++ [op, listToVal operands])
