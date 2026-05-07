@@ -5161,6 +5161,129 @@ theorem ListValDeep.length_mono : ∀ {vs : List Val} {h h' : Heap},
   | _ :: _, _, _, ⟨hx, hxs⟩, h_le =>
       ⟨ValDeep.length_mono hx h_le, ListValDeep.length_mono hxs h_le⟩
 
+/-! ## Deep validity of the initial runtime state
+
+    The runtime starts with a heap of atoms only (`.prim`,
+    `.builtinBaseApply`), so `HeapDeep` is trivially established.
+    Each `Env.cons` in `buildBindings` uses the previous heap length
+    as its index, which is `< new heap length` after `alloc`. -/
+
+/-- Atoms (non-closure, non-cons values) are `ValDeep` in any heap:
+    they have no embedded indices to bound. -/
+theorem ValDeep.atom : ∀ {v : Val} {h : Heap},
+    (∀ ps body cenv, v ≠ .closure ps body cenv) →
+    (∀ x y, v ≠ .cons x y) → ValDeep v h
+  | .num _,            _, _, _ => trivial
+  | .bool _,           _, _, _ => trivial
+  | .nilV,             _, _, _ => trivial
+  | .sym _,            _, _, _ => trivial
+  | .prim _,           _, _, _ => trivial
+  | .builtinBaseApply, _, _, _ => trivial
+  | .cons x y,         _, _, h_no_cons => absurd rfl (h_no_cons x y)
+  | .closure ps body cenv, _, h_no_closure, _ => absurd rfl (h_no_closure ps body cenv)
+
+/-- Append-alloc preserves `HeapDeep` when the appended value is
+    `ValDeep` in the new heap. -/
+theorem HeapDeep.alloc_atom {h : Heap} (h_deep : HeapDeep h) (v : Val)
+    (hv_atom : ∀ ps body cenv, v ≠ .closure ps body cenv)
+    (hv_no_cons : ∀ x y, v ≠ .cons x y) :
+    HeapDeep (h ++ [v]) := by
+  intro i v' hi
+  by_cases h_lt : i < h.length
+  · have h_eq : (h ++ [v])[i]? = h[i]? := getElem?_prefix h [v] i h_lt
+    rw [h_eq] at hi
+    exact ValDeep.length_mono (h_deep i v' hi) (by simp [List.length_append])
+  · have h_le : h.length ≤ i := Nat.le_of_not_lt h_lt
+    have h_eq : (h ++ [v])[i]? = [v][i - h.length]? :=
+      List.getElem?_append_right h_le
+    rw [h_eq] at hi
+    -- [v][k]? = some _ iff k = 0 (since [v] has length 1).
+    cases h_off : i - h.length with
+    | zero =>
+        rw [h_off] at hi
+        simp at hi
+        subst hi
+        exact ValDeep.atom hv_atom hv_no_cons
+    | succ k =>
+        rw [h_off] at hi
+        simp at hi
+
+/-- `buildBindings` over atom-valued pairs: produces an `EnvDeep` env
+    in a `HeapDeep` heap. -/
+theorem buildBindings_atom_deep :
+    ∀ (acc_env : Env) (acc_heap : Heap) (pairs : List (String × Val)),
+      EnvDeep acc_env acc_heap → HeapDeep acc_heap →
+      (∀ p ∈ pairs, (∀ ps body cenv, p.2 ≠ .closure ps body cenv) ∧
+                    (∀ x y, p.2 ≠ .cons x y)) →
+      let result := pairs.foldl
+        (fun (acc : Env × Heap) (kv : String × Val) =>
+          let (env, h) := acc
+          let (h', idx) := h.alloc kv.2
+          (.cons kv.1 idx env, h'))
+        (acc_env, acc_heap)
+      EnvDeep result.1 result.2 ∧ HeapDeep result.2
+  | _, _, [], h_env, h_heap, _ => ⟨h_env, h_heap⟩
+  | acc_env, acc_heap, (key, val) :: rest, h_env, h_heap, h_atoms => by
+      simp only [List.foldl, Heap.alloc]
+      have h_v_atom : (∀ ps body cenv, val ≠ .closure ps body cenv) ∧
+                      (∀ x y, val ≠ .cons x y) :=
+        h_atoms (key, val) (List.mem_cons_self)
+      have h_heap' : HeapDeep (acc_heap ++ [val]) :=
+        HeapDeep.alloc_atom h_heap val h_v_atom.1 h_v_atom.2
+      have h_env' : EnvDeep (.cons key acc_heap.length acc_env) (acc_heap ++ [val]) := by
+        refine ⟨?_, ?_⟩
+        · simp [List.length_append]
+        · exact EnvDeep.length_mono h_env (by simp [List.length_append])
+      have h_atoms_rest : ∀ p ∈ rest,
+          (∀ ps body cenv, p.2 ≠ .closure ps body cenv) ∧
+          (∀ x y, p.2 ≠ .cons x y) :=
+        fun p hp => h_atoms p (List.mem_cons.mpr (Or.inr hp))
+      exact buildBindings_atom_deep _ _ rest h_env' h_heap' h_atoms_rest
+
+/-- The initial base environment is Deep-valid: heap holds only
+    `.prim` atoms, env binds them at consecutive heap indices. -/
+theorem initBaseEnv_deep :
+    EnvDeep initBaseEnv.1 initBaseEnv.2 ∧ HeapDeep initBaseEnv.2 := by
+  unfold initBaseEnv
+  have h_nil_heap : HeapDeep ([] : Heap) := fun i v hi => by simp at hi
+  apply buildBindings_atom_deep .nil [] _ trivial h_nil_heap
+  intro p hp
+  -- Each pair p has p.2 = .prim _; show p.2 is neither a closure nor a cons.
+  -- We prove ∃ s, p.2 = .prim s via case analysis on `hp : p ∈ list`.
+  have h_prim : ∃ s, p.2 = .prim s := by
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
+    rcases hp with hp | hp | hp | hp | hp | hp | hp | hp | hp | hp | hp | hp | hp <;>
+      (rw [hp]; exact ⟨_, rfl⟩)
+  obtain ⟨s, h_p2⟩ := h_prim
+  exact ⟨fun _ _ _ h => by rw [h_p2] at h; injection h,
+         fun _ _ h => by rw [h_p2] at h; injection h⟩
+
+/-- The initial state's heap is `HeapDeep`, the user env and meta env
+    are `EnvDeep`. The runtime invariant the runner needs to bootstrap
+    `applyDirect_heap_extend_weak`'s Deep-validity preconditions. -/
+theorem initState_deep (defaultPolicy : BlackPolicy) :
+    EnvDeep (initState defaultPolicy).1 (initState defaultPolicy).2.2.heap ∧
+    EnvDeep (initState defaultPolicy).2.1 (initState defaultPolicy).2.2.heap ∧
+    HeapDeep (initState defaultPolicy).2.2.heap := by
+  unfold initState
+  obtain ⟨h_env, h_heap⟩ := initBaseEnv_deep
+  -- After alloc of .builtinBaseApply, heap = initBaseEnv.2 ++ [.builtinBaseApply].
+  have h_alloc_heap : HeapDeep (initBaseEnv.2 ++ [.builtinBaseApply]) :=
+    HeapDeep.alloc_atom h_heap .builtinBaseApply
+      (by intro _ _ _ h; simp at h) (by intro _ _ h; simp at h)
+  have h_user_alloc : EnvDeep initBaseEnv.1 (initBaseEnv.2 ++ [.builtinBaseApply]) :=
+    EnvDeep.length_mono h_env (by simp [List.length_append])
+  have h_meta_alloc :
+      EnvDeep (.cons "base-apply" initBaseEnv.2.length initBaseEnv.1)
+              (initBaseEnv.2 ++ [.builtinBaseApply]) := by
+    refine ⟨?_, ?_⟩
+    · simp [List.length_append]
+    · exact h_user_alloc
+  refine ⟨?_, ?_, ?_⟩
+  · simp only [Heap.alloc]; exact h_user_alloc
+  · simp only [Heap.alloc]; exact h_meta_alloc
+  · simp only [Heap.alloc]; exact h_alloc_heap
+
 /-- Closed values are vacuously `AllBelow` at any cutoff: no closures
     means no embedded indices. -/
 theorem closedValB_AllBelow (cutoff : Nat) :

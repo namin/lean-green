@@ -139,6 +139,17 @@ theorem rejectAll_respects_shift (cutoff : Nat) (padding : Heap) :
   intro _ _ _ _ _ _ _ _
   rfl
 
+/-- `acceptAllPolicy` trivially respects bisim — both sides return `true`. -/
+theorem acceptAllPolicy_respects_bisim : PolicyRespectsBisim acceptAllPolicy := by
+  intro _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  rfl
+
+/-- `acceptAllPolicy` trivially respects shift — both sides return `true`. -/
+theorem acceptAllPolicy_respects_shift (cutoff : Nat) (padding : Heap) :
+    PolicyRespectsShift cutoff padding acceptAllPolicy := by
+  intro _ _ _ _ _ _ _ _
+  rfl
+
 /-! ### Predicates -/
 
 /-- `op` is not a number. Used to split CE into the vacuous numerical
@@ -1269,3 +1280,30 @@ theorem verifiedTable_respects_shift (cutoff : Nat) (padding : Heap) :
       simp at hp; subst hp
       exact multnExactPolicy_respects_shift cutoff padding
   | n + 3, hp => simp at hp
+
+/-! ## End-to-end initial-state invariants
+
+    The runtime starts in a state satisfying all of the structural
+    preconditions that `applyDirect_heap_extend_weak` requires:
+    Deep validity of the heap and envs (via `initState_deep`), and
+    shift-respect for the verified policy table and the default
+    policy. -/
+
+/-- The initial runtime state established by `initState verifiedTable
+    acceptAllPolicy` satisfies the runtime invariants needed to apply
+    `applyDirect_heap_extend_weak` (with `ptable := verifiedTable`,
+    `s.policy := acceptAllPolicy`):
+    - `HeapDeep s.heap`
+    - `EnvDeep userEnv s.heap`
+    - `EnvDeep metaEnv s.heap`
+    - `PolicyTableRespectsShift _ _ verifiedTable` (for any cutoff/padding)
+    - `PolicyRespectsShift _ _ acceptAllPolicy` (for any cutoff/padding) -/
+theorem runtime_invariants_initial :
+    let (userEnv, metaEnv, s) := initState acceptAllPolicy
+    EnvDeep userEnv s.heap ∧ EnvDeep metaEnv s.heap ∧ HeapDeep s.heap ∧
+    (∀ cutoff padding, PolicyTableRespectsShift cutoff padding verifiedTable) ∧
+    (∀ cutoff padding, PolicyRespectsShift cutoff padding s.policy) := by
+  obtain ⟨h_user, h_meta, h_heap⟩ := initState_deep acceptAllPolicy
+  exact ⟨h_user, h_meta, h_heap,
+         fun cutoff padding => verifiedTable_respects_shift cutoff padding,
+         fun cutoff padding => acceptAllPolicy_respects_shift cutoff padding⟩
