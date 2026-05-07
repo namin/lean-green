@@ -311,18 +311,18 @@ theorem numGuardPolicy_respects_shift (cutoff : Nat) (padding : Heap) :
                                   cases as with
                                   | nil =>
                                       cases a with
-                                      | num _ => rfl
-                                      | bool _ => rfl
-                                      | quote _ => rfl
-                                      | lam _ _ => rfl
-                                      | app _ => rfl
-                                      | primApp _ _ => rfl
-                                      | seq _ => rfl
-                                      | em _ => rfl
-                                      | letE _ _ _ => rfl
-                                      | set _ _ => rfl
-                                      | installPolicy _ => rfl
-                                      | ifte _ _ _ => rfl
+                                      | num _ => simp
+                                      | bool _ => simp
+                                      | quote _ => simp
+                                      | lam _ _ => simp
+                                      | app _ => simp
+                                      | primApp _ _ => simp
+                                      | seq _ => simp
+                                      | em _ => simp
+                                      | letE _ _ _ => simp
+                                      | set _ _ => simp
+                                      | installPolicy _ => simp
+                                      | ifte _ _ _ => simp
                                       | var _ => rfl
                                   | cons _ _ => rfl
               | cons _ _ => rfl
@@ -510,13 +510,303 @@ theorem multnExactPolicy_respects_bisim : PolicyRespectsBisim multnExactPolicy :
             | some idx_n => simp [h_n_eq idx_n h_n]
       · rfl
 
-/-- `multnExactPolicy` respects shift. Mechanical case analysis on
-    the multn shape; the heap lookups via cenv-bound indices commute
-    with shift via `shift_heap_getElem?`, and the equality check
-    `v == oldVal` commutes via `shift_val_injective`. -/
+/-! ### Helpers for `multnExactPolicy_respects_shift` -/
+
+/-- The "orig"-cell-equality conjunct of `multnExactPolicy` commutes
+    with shift on its `cenv`/`heap`/`oldVal` inputs. -/
+private theorem multnExactPolicy_orig_match_shift
+    (cutoff : Nat) (padding : Heap) (heap : Heap)
+    (h_cutoff : cutoff ≤ heap.length) (oldVal : Val) (cenv : Env) :
+    (match cenv.lookup "orig" with
+     | some idx_o =>
+         match heap[idx_o]? with
+         | some v => v == oldVal
+         | _ => false
+     | none => false)
+    = (match (shift_env cutoff padding.length cenv).lookup "orig" with
+       | some idx_o =>
+           match (shift_heap cutoff padding heap)[idx_o]? with
+           | some v => v == shift_val cutoff padding.length oldVal
+           | _ => false
+       | none => false) := by
+  cases h_o : cenv.lookup "orig" with
+  | none => rw [shift_env_lookup_none cutoff padding.length cenv "orig" h_o]
+  | some idx_o =>
+      rw [shift_env_lookup cutoff padding.length cenv "orig" idx_o h_o]
+      simp only [shift_heap_getElem? cutoff padding heap idx_o h_cutoff]
+      cases hp_o : heap[idx_o]? with
+      | none => rfl
+      | some v =>
+          simp only [Option.map_some]
+          show (v == oldVal) = (shift_val cutoff padding.length v == shift_val cutoff padding.length oldVal)
+          by_cases h_eq : v = oldVal
+          · rw [h_eq]
+            show Val.beq oldVal oldVal
+                = Val.beq (shift_val cutoff padding.length oldVal)
+                          (shift_val cutoff padding.length oldVal)
+            rw [val_beq_self, val_beq_self]
+          · have h_neq_shift :
+                shift_val cutoff padding.length v
+                ≠ shift_val cutoff padding.length oldVal := by
+              intro h_inj
+              exact h_eq (shift_val_injective cutoff padding.length v oldVal h_inj)
+            have h_lhs : (v == oldVal) = false := by
+              cases hb : v == oldVal with
+              | true => exact absurd (val_beq_eq v oldVal hb) h_eq
+              | false => rfl
+            have h_rhs : (shift_val cutoff padding.length v
+                          == shift_val cutoff padding.length oldVal) = false := by
+              cases hb : shift_val cutoff padding.length v
+                          == shift_val cutoff padding.length oldVal with
+              | true => exact absurd (val_beq_eq _ _ hb) h_neq_shift
+              | false => rfl
+            rw [h_lhs, h_rhs]
+
+/-- The "num?"-cell-check conjunct of `multnExactPolicy` commutes
+    with shift on its `cenv`/`heap` inputs. -/
+private theorem multnExactPolicy_numq_match_shift
+    (cutoff : Nat) (padding : Heap) (heap : Heap)
+    (h_cutoff : cutoff ≤ heap.length) (cenv : Env) :
+    (match cenv.lookup "num?" with
+     | some idx_n =>
+         match heap[idx_n]? with
+         | some (.prim "num?") => true
+         | _ => false
+     | none => false)
+    = (match (shift_env cutoff padding.length cenv).lookup "num?" with
+       | some idx_n =>
+           match (shift_heap cutoff padding heap)[idx_n]? with
+           | some (.prim "num?") => true
+           | _ => false
+       | none => false) := by
+  cases h_n : cenv.lookup "num?" with
+  | none => rw [shift_env_lookup_none cutoff padding.length cenv "num?" h_n]
+  | some idx_n =>
+      rw [shift_env_lookup cutoff padding.length cenv "num?" idx_n h_n]
+      simp only [shift_heap_getElem? cutoff padding heap idx_n h_cutoff]
+      cases hp_n : heap[idx_n]? with
+      | none => simp
+      | some v =>
+          simp only [Option.map_some]
+          cases v with
+          | num _ => rfl
+          | bool _ => rfl
+          | nilV => rfl
+          | sym _ => rfl
+          | cons _ _ => rfl
+          | builtinBaseApply => rfl
+          | closure _ _ _ => rfl
+          | prim _ => simp only [shift_val]
+
+/-- `multnExactPolicy` respects shift. Heap lookups via cenv-bound
+    indices commute with shift via `shift_heap_getElem?`; the
+    equality check `v == oldVal` commutes with shift via
+    `shift_val_injective` (and `val_beq_self` for the reflexive case). -/
 theorem multnExactPolicy_respects_shift (cutoff : Nat) (padding : Heap) :
     PolicyRespectsShift cutoff padding multnExactPolicy := by
-  sorry
+  intro target idx env metaEnv heap oldVal new h_cutoff
+  unfold multnExactPolicy
+  cases new with
+  | num _ => simp [shift_val]
+  | bool _ => simp [shift_val]
+  | nilV => simp [shift_val]
+  | sym _ => simp [shift_val]
+  | prim _ => simp [shift_val]
+  | builtinBaseApply => simp [shift_val]
+  | cons _ _ => simp [shift_val]
+  | closure ps body cenv =>
+      simp only [shift_val]
+      congr 1
+      -- Nested case analysis on ps and body: either match the multn
+      -- shape (then use the helpers) or fall through to `_ => false`
+      -- (then `rfl`).
+      cases ps with
+      | nil => simp [Val.beq]
+      | cons p1 ps1 =>
+          cases ps1 with
+          | nil => simp [Val.beq]
+          | cons p2 ps2 =>
+              cases ps2 with
+              | cons _ _ => simp [Val.beq]
+              | nil =>
+                  cases body with
+                  | num _ => simp
+                  | bool _ => simp
+                  | quote _ => simp
+                  | var _ => simp
+                  | lam _ _ => simp
+                  | app _ => simp
+                  | primApp _ _ => simp
+                  | seq _ => simp
+                  | em _ => simp
+                  | letE _ _ _ => simp
+                  | set _ _ => simp
+                  | installPolicy _ => simp
+                  | ifte cond _then _else =>
+                      cases cond with
+                      | num _ => simp
+                      | bool _ => simp
+                      | quote _ => simp
+                      | var _ => simp
+                      | lam _ _ => simp
+                      | app _ => simp
+                      | seq _ => simp
+                      | em _ => simp
+                      | letE _ _ _ => simp
+                      | set _ _ => simp
+                      | installPolicy _ => simp
+                      | ifte _ _ _ => simp
+                      | primApp f args =>
+                          cases f with
+                          | num _ => simp
+                          | bool _ => simp
+                          | quote _ => simp
+                          | lam _ _ => simp
+                          | app _ => simp
+                          | primApp _ _ => simp
+                          | seq _ => simp
+                          | em _ => simp
+                          | letE _ _ _ => simp
+                          | set _ _ => simp
+                          | installPolicy _ => simp
+                          | ifte _ _ _ => simp
+                          | var pred =>
+                              cases args with
+                              | nil => simp
+                              | cons a as =>
+                                  cases as with
+                                  | cons _ _ => simp
+                                  | nil =>
+                                      cases a with
+                                      | num _ => simp
+                                      | bool _ => simp
+                                      | quote _ => simp
+                                      | lam _ _ => simp
+                                      | app _ => simp
+                                      | primApp _ _ => simp
+                                      | seq _ => simp
+                                      | em _ => simp
+                                      | letE _ _ _ => simp
+                                      | set _ _ => simp
+                                      | installPolicy _ => simp
+                                      | ifte _ _ _ => simp
+                                      | var arg_var =>
+                                          cases _else with
+                                          | num _ => simp
+                                          | bool _ => simp
+                                          | quote _ => simp
+                                          | var _ => simp
+                                          | lam _ _ => simp
+                                          | app _ => simp
+                                          | seq _ => simp
+                                          | em _ => simp
+                                          | letE _ _ _ => simp
+                                          | set _ _ => simp
+                                          | installPolicy _ => simp
+                                          | ifte _ _ _ => simp
+                                          | primApp f' args' =>
+                                              cases f' with
+                                              | num _ => simp
+                                              | bool _ => simp
+                                              | quote _ => simp
+                                              | lam _ _ => simp
+                                              | app _ => simp
+                                              | primApp _ _ => simp
+                                              | seq _ => simp
+                                              | em _ => simp
+                                              | letE _ _ _ => simp
+                                              | set _ _ => simp
+                                              | installPolicy _ => simp
+                                              | ifte _ _ _ => simp
+                                              | var pred'' =>
+                                                  cases args' with
+                                                  | nil => simp
+                                                  | cons a' as' =>
+                                                      cases as' with
+                                                      | nil => simp
+                                                      | cons b' bs' =>
+                                                          cases bs' with
+                                                          | cons _ _ => simp
+                                                          | nil =>
+                                                              cases a' with
+                                                              | num _ => simp
+                                                              | bool _ => simp
+                                                              | quote _ => simp
+                                                              | lam _ _ => simp
+                                                              | app _ => simp
+                                                              | primApp _ _ => simp
+                                                              | seq _ => simp
+                                                              | em _ => simp
+                                                              | letE _ _ _ => simp
+                                                              | set _ _ => simp
+                                                              | installPolicy _ => simp
+                                                              | ifte _ _ _ => simp
+                                                              | var arg1 =>
+                                                                  cases b' with
+                                                                  | num _ => simp
+                                                                  | bool _ => simp
+                                                                  | quote _ => simp
+                                                                  | lam _ _ => simp
+                                                                  | app _ => simp
+                                                                  | primApp _ _ => simp
+                                                                  | seq _ => simp
+                                                                  | em _ => simp
+                                                                  | letE _ _ _ => simp
+                                                                  | set _ _ => simp
+                                                                  | installPolicy _ => simp
+                                                                  | ifte _ _ _ => simp
+                                                                  | var arg2 =>
+                                                                      -- All structural conditions concretized.
+                                                                      -- The match decides on string equality of
+                                                                      -- p1, p2, pred, arg_var, pred'', arg1, arg2.
+                                                                      -- Each side either takes the multn arm
+                                                                      -- (using helpers) or falls through (rfl).
+                                                                      -- Since strings are decidable, simp should
+                                                                      -- reduce both sides identically.
+                                                                      by_cases hp1 : p1 = "op"
+                                                                      · by_cases hp2 : p2 = "args"
+                                                                        · by_cases hpred : pred = "num?"
+                                                                          · by_cases harg : arg_var = "op"
+                                                                            · by_cases hpred'' : pred'' = "orig"
+                                                                              · by_cases harg1 : arg1 = "op"
+                                                                                · by_cases harg2 : arg2 = "args"
+                                                                                  · subst hp1 hp2 hpred harg hpred'' harg1 harg2
+                                                                                    -- The outer match reduces: pattern fully matches.
+                                                                                    -- Reduce explicitly via `show` to match the helpers.
+                                                                                    show
+                                                                                      ((match cenv.lookup "orig" with
+                                                                                        | some idx_o =>
+                                                                                            match heap[idx_o]? with
+                                                                                            | some v => v == oldVal
+                                                                                            | _ => false
+                                                                                        | none => false) &&
+                                                                                       (match cenv.lookup "num?" with
+                                                                                        | some idx_n =>
+                                                                                            match heap[idx_n]? with
+                                                                                            | some (.prim "num?") => true
+                                                                                            | _ => false
+                                                                                        | none => false))
+                                                                                      = ((match (shift_env cutoff padding.length cenv).lookup "orig" with
+                                                                                          | some idx_o =>
+                                                                                              match (shift_heap cutoff padding heap)[idx_o]? with
+                                                                                              | some v => v == shift_val cutoff padding.length oldVal
+                                                                                              | _ => false
+                                                                                          | none => false) &&
+                                                                                         (match (shift_env cutoff padding.length cenv).lookup "num?" with
+                                                                                          | some idx_n =>
+                                                                                              match (shift_heap cutoff padding heap)[idx_n]? with
+                                                                                              | some (.prim "num?") => true
+                                                                                              | _ => false
+                                                                                          | none => false))
+                                                                                    rw [multnExactPolicy_orig_match_shift cutoff padding heap h_cutoff oldVal cenv,
+                                                                                        multnExactPolicy_numq_match_shift cutoff padding heap h_cutoff cenv]
+                                                                                  · simp [harg2]
+                                                                                · simp [harg1]
+                                                                              · simp [hpred'']
+                                                                            · simp [harg]
+                                                                          · simp [hpred]
+                                                                        · simp [hp2]
+                                                                      · simp [hp1]
 
 /-! ## Install-protocol hypotheses -/
 

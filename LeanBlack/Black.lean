@@ -293,6 +293,64 @@ theorem env_beq_eq : ∀ (a b : Env), Env.beq a b = true → a = b
 
 end
 
+/-! ## Reflexivity of structural beq -/
+
+mutual
+
+theorem val_beq_self : ∀ (a : Val), Val.beq a a = true
+  | .num _ => by simp [Val.beq]
+  | .bool _ => by simp [Val.beq]
+  | .nilV => rfl
+  | .sym _ => by simp [Val.beq]
+  | .prim _ => by simp [Val.beq]
+  | .builtinBaseApply => rfl
+  | .cons x y => by
+      unfold Val.beq
+      rw [val_beq_self x, val_beq_self y]; rfl
+  | .closure ps body cenv => by
+      unfold Val.beq
+      rw [expr_beq_self body, env_beq_self cenv]
+      simp
+
+theorem expr_beq_self : ∀ (a : Expr), Expr.beq a a = true
+  | .num _ => by simp [Expr.beq]
+  | .bool _ => by simp [Expr.beq]
+  | .quote v => by unfold Expr.beq; exact val_beq_self v
+  | .var _ => by simp [Expr.beq]
+  | .ifte c t e => by
+      unfold Expr.beq
+      rw [expr_beq_self c, expr_beq_self t, expr_beq_self e]; rfl
+  | .lam ps body => by
+      unfold Expr.beq
+      rw [expr_beq_self body]; simp
+  | .app es => by unfold Expr.beq; exact expr_list_beq_self es
+  | .set x e => by
+      unfold Expr.beq
+      rw [expr_beq_self e]; simp
+  | .em b => by unfold Expr.beq; exact expr_beq_self b
+  | .primApp f as => by
+      unfold Expr.beq
+      rw [expr_beq_self f, expr_list_beq_self as]; rfl
+  | .letE x e b => by
+      unfold Expr.beq
+      rw [expr_beq_self e, expr_beq_self b]; simp
+  | .seq es => by unfold Expr.beq; exact expr_list_beq_self es
+  | .installPolicy _ => by simp [Expr.beq]
+
+theorem expr_list_beq_self : ∀ (xs : List Expr), exprListBeq xs xs = true
+  | [] => rfl
+  | x :: xs => by
+      unfold exprListBeq
+      rw [expr_beq_self x, expr_list_beq_self xs]; rfl
+
+theorem env_beq_self : ∀ (a : Env), Env.beq a a = true
+  | .nil => rfl
+  | .cons k i r => by
+      unfold Env.beq
+      rw [env_beq_self r]; simp
+
+end
+
 abbrev Heap := List Val
 
 /-- The mutation site context the policy gate sees at admission
