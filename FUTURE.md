@@ -10,8 +10,7 @@ the result split into three families: *extending the verified
 story*, *generalizing the infrastructure*, and *redoing it on
 different foundations*.
 
-A single `sorry` remains in `Policies.lean` — see *Outstanding
-sorry* below.
+Zero sorries across `Bisim.lean`, `Black.lean`, and `Policies.lean`.
 
 ---
 
@@ -318,31 +317,29 @@ IH (`∀ k ≤ K, ValVis_aux k`), avoiding the circularity that a
 Total cost: ~700 LOC of new proved infrastructure. ~30 sites in
 `frame`'s proof updated to the new postcondition.
 
-### Outstanding `sorry` in `Policies.lean`
+### `multnExact_CE_nonnum_case` — closed via the shift path
 
-`multnExact_CE_nonnum_case`'s historical proof technique uses an
-asymmetric `(s, s_alloc)` framing setup (side A at state `s`,
-side B at state `s_alloc` = `s` with the multn closure body's
-pre-allocated arg cells). The new `WFCtx.heap_len_eq` invariant
-fails for this asymmetric setup, leaving a `sorry` for the
-`heap_len_eq` field.
-
-**Resolution path** (~200-300 LOC): a single-side `applyDirect`
-prefix-extension lemma:
+The historical asymmetric-framing issue (side A at `s`, side B at
+`s_alloc`, incompatible with the strong cross-side `heap_len_eq`
+invariant) is resolved via a **functional shift** formulation of
+prefix-extension:
 
 ```
-applyDirect at heap h gives (r, s') →
-∀ extras, applyDirect at (h ++ extras) gives (r', s'') with
-  ValVis r r' s'.heap s''.heap ∧ ...
+applyDirect_heap_extend_via_shift :
+  applyDirect at heap h gives (r, s') →
+  ∀ extras, applyDirect at (h ++ extras) gives (r', s'') with
+    ValVis_weak r r' s'.heap s''.heap ∧ ...
 ```
 
-Provable by induction on fuel + cases on `op`, mirroring the
-existing framing theorem's `applyDirect` case but for the single-
-side prefix-extension setting (envs are the same on both sides;
-heaps differ by a prefix-relation). Use this lemma to relate side
-A's actual run at `s` to a hypothetical run at `s_alloc`, then
-frame symmetrically on `(s_alloc, s_alloc)` where `heap_len_eq`
-holds trivially.
+The proof uses `shift_respect` — a joint shift-commutativity
+theorem for `eval`/`evalList`/`applyVia`/`applyDirect` — together
+with `valVis_self_shift` to bridge the result to its shift. The
+`.set` case threads `PolicyRespectsShift` (the shift-flavored
+analog of `PolicyRespectsBisim`); `verifiedTable_respects_shift`
+discharges this for the verified table. `applyDirect_heap_extend_weak`
+is now a thin wrapper exposing the same external API with extra
+Deep-validity preconditions, which `runtime_invariants_initial`
+discharges for the runner's startup state.
 
 ### Bundle the per-side `frame` hypotheses
 

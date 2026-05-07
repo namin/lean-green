@@ -737,14 +737,17 @@ this.
   `EnvVis_aux_update` mutual depth induction. See *Refinements /
   `.set`* for the design walkthrough.
 
-- **Outstanding sorry in `Policies.lean`.** A single sorry
-  remains: `multnExact_CE_nonnum_case`'s historical asymmetric
-  `(s, s_alloc)` framing setup is incompatible with the new
-  `WFCtx.heap_len_eq` invariant. Resolution path: a single-side
-  `applyDirect` prefix-extension lemma (~200-300 LOC).
+- **`multnExact_CE_nonnum_case` framing — closed.** The historical
+  asymmetric `(s, s_alloc)` framing setup is resolved via the
+  functional-shift prefix-extension lemma
+  `applyDirect_heap_extend_via_shift`: `eval`/`evalList`/`applyVia`/
+  `applyDirect` all commute with shift, so the prefix-extended
+  computation is just the shifted computation, with the result-side
+  bridge to `ValVis_weak r r'` provided by `valVis_self_shift`.
+  No `WFCtx`-style cross-side invariants required.
 
-The first three are sequencing or implementation risks; the last
-records the one outstanding sorry in the build.
+The three above are sequencing or implementation risks; the build
+is sorry-free.
 
 ## References
 

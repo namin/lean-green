@@ -208,11 +208,11 @@ threads these invariants through the framing theorem and uses a
 mutual depth induction `ValVis_aux_update` / `EnvVis_aux_update`
 to handle in-place cell updates.
 
-A single `sorry` remains in `Policies.lean`'s
-`multnExact_CE_nonnum_case` (the historical asymmetric framing
-setup `(s, s_alloc)` doesn't satisfy the new `heap_len_eq`
-invariant — needs a single-side `applyDirect` prefix-extension
-lemma to resolve cleanly).
+`multnExact_CE_nonnum_case`'s historical asymmetric framing
+setup `(s, s_alloc)` (incompatible with `WFCtx.heap_len_eq`) is
+resolved via the functional-shift prefix-extension lemma
+`applyDirect_heap_extend_via_shift` (no `WFCtx`-style cross-side
+invariants; uses `shift_respect`'s joint shift-commutativity).
 
 ### 13. Closure-case args allocate via foldl on `args.zip ps`
 

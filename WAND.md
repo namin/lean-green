@@ -166,9 +166,8 @@ The simplest line: pick `M = ((λx. x) 0)` and `N = 0`. Then:
 
 Both cases use `frame.eval` (the closed `.set` case included),
 together with `applyDirect_heap_extend_weak` (the prefix-extension
-lemma whose statement is in `Bisim.lean` — body is the only
-remaining `sorry` in the framing development; see "Why the headline
-CE statement is `_weak`" below).
+lemma in `Bisim.lean`, fully proved via the shift path — see "Why
+the headline CE statement is `_weak`" below).
 
 ### W2 — induction on βη derivation
 
@@ -259,14 +258,13 @@ not just a curiosity at the bottom of a lattice.
   needs to be invented.
 - `Bisim.lean` is the proof infrastructure. The two-tier `ValVis`
   / `ValVis_weak` development is in place; the `.set` framing
-  case is closed; the only remaining proof work at the
-  bisimulation layer is closing `applyDirect_heap_extend_weak`'s
-  body (statement is in place, body is `sorry`).
+  case is closed; `applyDirect_heap_extend_weak` is fully proved
+  (via the functional shift path).
 
 This is why WAND.md is a *future* document, not a separate
 project: the artifact is most of the way there structurally.
-What is missing is (a) closing `applyDirect_heap_extend_weak`,
-(b) defining contextual equivalence, (c) writing the theorems.
+What is missing is (a) defining contextual equivalence, (b)
+writing the theorems.
 
 ## Why the headline CE statement is `_weak`
 
@@ -301,22 +299,19 @@ the bridge `ValVis_to_weak`. Existing strong-`ValVis` proofs (the
 are unchanged. CE on outputs is downgraded to the weak form, which
 is what behavioral equivalence requires anyway.
 
-**The remaining open `sorry`** is in `applyDirect_heap_extend_weak`
-(`Bisim.lean`): the prefix-extension lemma at `ValVis_weak`. Its
-statement is true (the cenv-shift obstruction is resolved by the
-weaker relation); its proof is a routine joint mutual induction on
-fuel for `eval / evalList / applyVia / applyDirect`, structurally
-similar to `frame`'s ~1500 LOC proof but single-side and with the
-weaker conclusion (no `WFCtx.env_eq` / `heap_len_eq` invariants to
-thread). Estimated 600-800 LOC.
-
-**Why a previously proposed shorter route doesn't work.** Earlier
-notes proposed proving the prefix-extension at the strong `ValVis`
-in ~200-300 LOC. That conclusion turned out to be false (the
-cenv-shift obstruction above), and the LOC estimate underweighted
-the two-tier development that actually closes things. The ~600-800
-LOC budget is the realistic one — large but mechanical, with no
-new architectural design decisions remaining.
+**`applyDirect_heap_extend_weak` is closed** via the functional
+shift path. The cenv-shift obstruction (which made the strong
+`ValVis` formulation false for closure-returning ops) is resolved
+by viewing prefix-extension as a syntactic operation: `shift_idx`
+on heap indices, lifted compositionally through `shift_val` /
+`shift_env` / `shift_heap`. The joint shift-commutativity theorem
+`shift_respect` (eval / evalList / applyVia / applyDirect all
+commute with shift) gives the prefix-extension lemma directly,
+with the result-side bridge to `ValVis_weak r r'` provided by
+`valVis_self_shift` (a value is weakly bisim with its own shift).
+The `.set` case threads `PolicyRespectsShift` (the shift-flavored
+analog of `PolicyRespectsBisim`); `verifiedTable_respects_shift`
+discharges this for the verified policies.
 
 ## References
 

@@ -101,17 +101,34 @@ heaps without requiring a prefix relation.
 
 ## Status
 
-**`Bisim.lean` has zero sorries.** The `.set _ _` case of
-`frame.eval` is fully proved using the cross-side `HeapEvolution`
-infrastructure (`PolicyRespectsBisim` invariant on the active
-policy, `env_eq` and `heap_len_eq` invariants on `WFCtx`, and the
-`ValVis_aux_update` / `EnvVis_aux_update` mutual depth induction).
+**Zero sorries across `Bisim.lean`, `Black.lean`, and
+`Policies.lean`.** Every theorem builds clean.
 
-**One `sorry` remains in `Policies.lean`** — an architectural
-follow-up: `multnExact_CE_nonnum_case`'s historical asymmetric
-`(s, s_alloc)` framing setup is incompatible with the new
-`heap_len_eq` invariant on `WFCtx`. The resolution path is a
-single-side `applyDirect` prefix-extension lemma.
+The proof has two parallel paths:
+
+- **Cross-side `frame`** (the original): joint induction with
+  `WFCtx`'s `env_eq` / `heap_len_eq` invariants, `HeapEvolution`,
+  and the `ValVis_aux_update` / `EnvVis_aux_update` self-update
+  depth induction. Closes the cross-side `.set` case.
+- **Functional shift** (`shift_respect`): the prefix-extension
+  becomes a syntactic `shift_idx` / `shift_val` / `shift_env` /
+  `shift_heap` operation; `eval`/`evalList`/`applyVia`/
+  `applyDirect` all *commute* with shift. Closes
+  `applyDirect_heap_extend_via_shift` without needing a
+  cross-side `heap_len_eq` invariant — exactly the obstacle that
+  made the historical asymmetric `(s, s_alloc)` setup fail.
+
+`applyDirect_heap_extend_weak` is a thin wrapper over
+`applyDirect_heap_extend_via_shift`. The `.set` case in
+`shift_respect` closes via `PolicyRespectsShift` (the shift-flavored
+analog of `PolicyRespectsBisim`), which `policy_shift_preserved`
+threads through the joint induction. `verifiedTable_respects_shift`
+proves all three verified policies (`rejectAll`, `numGuardPolicy`,
+`multnExactPolicy`) are shift-respecting; `acceptAllPolicy_respects_shift`
+covers the default initial policy. `initState_deep` and
+`runtime_invariants_initial` establish `HeapDeep` / `EnvDeep` /
+`PolicyTableRespectsShift` / `PolicyRespectsShift` for the runtime
+starting state.
 
 **`LeanBlack/Wand.lean`** carries the value-level existential
 defeat of Wand 1998 — non-syntactically-equal expressions (a
@@ -209,11 +226,14 @@ The architecture that closed this case:
 
 Total: ~700 LOC of new proved infrastructure in `Bisim.lean`.
 
-Outstanding follow-up (architectural, in `Policies.lean`):
-`multnExact_CE_nonnum_case`'s historical asymmetric framing setup
-(`s` on side A, `s_alloc` on side B) doesn't satisfy the new
-`heap_len_eq` invariant. A single-side `applyDirect` prefix-
-extension lemma would resolve this.
+The `multnExact_CE_nonnum_case` historical asymmetric-framing
+issue is resolved via the shift-based prefix-extension path
+described in the *Status* section above.
+`applyDirect_heap_extend_weak` now takes additional Deep-validity
+and `PolicyRespectsShift` preconditions, propagated to
+`multnExact_CE_nonnum_case` and `multnExact_soundForCE_first_install`;
+`runtime_invariants_initial` discharges them for the initial
+runner state.
 
 ## Layout
 
