@@ -2539,6 +2539,74 @@ theorem closure_ValVis_imp_cenv_EnvVis
   intro d
   exact (h_vv (d + 1)).2.2.2
 
+/-! ## ValVis collapses to Val equality
+
+    Under the strengthened `ValVis_aux` on closures (which now
+    requires `cenv_a = cenv_b` structurally), universal-depth
+    bisimulation between two values implies they are *equal* as
+    Lean terms. Used by the `PolicyRespectsBisim` proofs for
+    policies that pattern-match on `Val` structure (where bisim-
+    related inputs need to give the same pattern result). -/
+theorem bisim_imp_eq : ∀ (v1 v2 : Val) (h1 h2 : Heap),
+    ValVis v1 v2 h1 h2 → v1 = v2
+  | .num _,            v2, _, _, h_vis => by
+      have h := h_vis 1
+      cases v2 <;> first
+        | (simp only [ValVis_aux] at h; subst h; rfl)
+        | (simp [ValVis_aux] at h)
+  | .bool _,           v2, _, _, h_vis => by
+      have h := h_vis 1
+      cases v2 <;> first
+        | (simp only [ValVis_aux] at h; subst h; rfl)
+        | (simp [ValVis_aux] at h)
+  | .nilV,             v2, _, _, h_vis => by
+      have h := h_vis 1
+      cases v2 <;> first | rfl | (simp [ValVis_aux] at h)
+  | .sym _,            v2, _, _, h_vis => by
+      have h := h_vis 1
+      cases v2 <;> first
+        | (simp only [ValVis_aux] at h; subst h; rfl)
+        | (simp [ValVis_aux] at h)
+  | .prim _,           v2, _, _, h_vis => by
+      have h := h_vis 1
+      cases v2 <;> first
+        | (simp only [ValVis_aux] at h; subst h; rfl)
+        | (simp [ValVis_aux] at h)
+  | .builtinBaseApply, v2, _, _, h_vis => by
+      have h := h_vis 1
+      cases v2 <;> first | rfl | (simp [ValVis_aux] at h)
+  | .cons x_a y_a,     v2, _, _, h_vis => by
+      have h1 := h_vis 1
+      cases v2 with
+      | cons x_b y_b =>
+          -- ValVis at depth k+1 on .cons: ValVis_aux k on each component.
+          have h_x : ValVis x_a x_b _ _ := fun k => (h_vis (k + 1)).1
+          have h_y : ValVis y_a y_b _ _ := fun k => (h_vis (k + 1)).2
+          have ex := bisim_imp_eq x_a x_b _ _ h_x
+          have ey := bisim_imp_eq y_a y_b _ _ h_y
+          rw [ex, ey]
+      | num _ => simp [ValVis_aux] at h1
+      | bool _ => simp [ValVis_aux] at h1
+      | nilV => simp [ValVis_aux] at h1
+      | sym _ => simp [ValVis_aux] at h1
+      | closure _ _ _ => simp [ValVis_aux] at h1
+      | prim _ => simp [ValVis_aux] at h1
+      | builtinBaseApply => simp [ValVis_aux] at h1
+  | .closure ps body cenv, v2, _, _, h_vis => by
+      have h1 := h_vis 1
+      cases v2 with
+      | closure ps_b body_b cenv_b =>
+          -- ValVis_aux 1 on closures gives ps_eq, body_eq, cenv_eq.
+          obtain ⟨h_ps, h_body, h_cenv, _⟩ := h1
+          rw [h_ps, h_body, h_cenv]
+      | num _ => simp [ValVis_aux] at h1
+      | bool _ => simp [ValVis_aux] at h1
+      | nilV => simp [ValVis_aux] at h1
+      | sym _ => simp [ValVis_aux] at h1
+      | cons _ _ => simp [ValVis_aux] at h1
+      | prim _ => simp [ValVis_aux] at h1
+      | builtinBaseApply => simp [ValVis_aux] at h1
+
 /-! ## Framing theorem (joint mutual statement)
 
     Each function in the four-way mutual block preserves bisimulation
