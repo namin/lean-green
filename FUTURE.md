@@ -182,16 +182,34 @@ chain-CE theorem is partway done.
   closure (the previous multn). Generalizing the proof requires
   handling the closure-dispatch path through `applyDirect baseApply
   [op, listToVal operands]`.
-- `CE.refl` and `CE.trans` — both need ValVis
-  reflexivity/transitivity lemmas that aren't currently
-  available. These are the substantive proof work, ~200 LOC.
+- `CE.refl` and `CE.trans` — both need `ValVis` and `EnvVis`
+  transitivity lemmas (`ValVis_aux_trans` / `EnvVis_aux_trans`,
+  mutually recursive at every depth). These are the substantive
+  proof work.
 - Compose the chain theorem: each install proves CE between the
   new closure and the previous; chain transitivity gives CE back
   to `.builtinBaseApply`. ~50 LOC once the lemmas above are in
   place.
 
-Total remaining effort: ~250 LOC of proof work (the runtime
-side is complete).
+**On the difficulty.** Attempted `ValVis_aux_trans` twice in a
+session and bailed each time. The structure is right (mutual
+induction at every depth `n`, with `EnvVis_aux_trans` at depth
+`n` calling `ValVis_aux_trans` at depth `n-1`), but the case
+analysis over `Val`-constructor triples (`v_a × v_b × v_c`) is
+8³ = 512 combinations to dispatch — most are mismatches that
+should follow from `h.elim` (one of `h1`, `h2` is `False` from
+ValVis on different constructors), but Lean's pattern-match
+elaborator doesn't auto-discharge the way `_extends`-style
+proofs (which only have 8² combinations) do. A clean approach
+likely needs either:
+- a helper lemma `ValVis_aux_constructor_match : ValVis_aux n v_a
+  v_b h_a h_b → constructor_of v_a = constructor_of v_b` that
+  factorizes the mismatch reasoning, *or*
+- a tactic-mode proof with carefully-designed `simp_all` automation
+  that simplifies each of the 512 sub-goals uniformly.
+
+Estimated: ~150–250 LOC for `ValVis_aux_trans` once the right
+proof shape is found. Real proof work, not just plumbing.
 
 ### CE-soundness for `numGuardPolicy`
 
