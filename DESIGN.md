@@ -147,6 +147,11 @@ theorem applyDirect_frame :
   ValVis op_a op_b s_a.heap s_b.heap →
   ListValVis args_a args_b s_a.heap s_b.heap →
   EnvVis metaEnv metaEnv s_a.heap s_b.heap →
+  PolicyTableRespectsBisim ptable →
+  WFCtx metaEnv metaEnv metaEnv s_a s_b →
+  ValVis op_a op_b s_a.heap s_b.heap →
+  ListValVis args_a args_b s_a.heap s_b.heap →
+  EnvVis metaEnv metaEnv s_a.heap s_b.heap →
   ValValid op_a s_a.heap → ValValid op_b s_b.heap →
   ListValValid args_a s_a.heap → ListValValid args_b s_b.heap →
   applyDirect fuel ptable op_a args_a metaEnv s_a = some (r_a, s_a') →
@@ -154,7 +159,7 @@ theorem applyDirect_frame :
     applyDirect fuel ptable op_b args_b metaEnv s_b = some (r_b, s_b') ∧
     ValVis r_a r_b s_a'.heap s_b'.heap ∧
     WFCtx metaEnv metaEnv metaEnv s_a' s_b' ∧
-    HeapExt s_a s_a' ∧ HeapExt s_b s_b' ∧
+    HeapEvolution s_a s_b s_a' s_b' ∧
     EnvVis metaEnv metaEnv s_a'.heap s_b'.heap ∧
     ValValid r_a s_a'.heap ∧ ValValid r_b s_b'.heap
 ```
@@ -169,10 +174,10 @@ the closure case allocates args (which requires `EnvValid` on
 the closure's cenv, which unfolds from `ValValid` on the closure
 value).
 
-All four statements are closed *except* the `.set` case of
-`frame.eval`, which remains a `sorry` — see *Open work* below.
-The `.quote` case is closed by a runtime `closedValB` check on
-the quoted value (see *Refinements / `.quote`*).
+**All four statements are fully closed, including the `.set`
+case of `frame.eval`.** The `.quote` case is closed by a runtime
+`closedValB` check on the quoted value (see *Refinements /
+`.quote`*).
 
 The internal `frame` signature is intentionally not bundled the
 way the public-facing `multnExact_soundForCE_first_install` is:
@@ -181,14 +186,11 @@ load-bearing for the proof body's case-analysis on the cross-side
 bisim relation, and bundling would force destructure-and-reconstruct
 at every IH callsite.
 
-Status: **fully closed**, including the previously-open `.quote`
-and `.quote` case in `eval`. The `.set` case of `eval` remains
-open — see *Open work* below. The closure of `.quote` involved a
-narrower runtime restriction on what can appear in a quoted
-position; see *Refinements / `.quote` and `closedValB`*.
+Status: **fully closed**. `Bisim.lean` has zero sorries.
 
-`WFCtx`, `HeapExt`, and `ListValVis` are bundling abstractions that
-emerged during the build — see the *Refinements* section below.
+`WFCtx`, `HeapEvolution`, and `ListValVis` are bundling
+abstractions that emerged during the build — see the
+*Refinements* section below.
 
 ## Why ValVis
 
@@ -646,71 +648,65 @@ when a `set!` targets a meta-env binding, `s.policy oldVal newVal`
 decides whether to admit the mutation, and on admission the heap
 is updated *in place* via `Heap.update idx v`.
 
-Two obstacles meet here:
+Two obstacles met here, both now resolved:
 
 1. `s.policy` is a black-box `Bool`-valued function. Across the
    two sides of the bisimulation, the inputs are `ValVis`-related
-   but not necessarily equal; nothing in the framework forces the
+   but not necessarily equal; the framework had to *force* the
    policy to give the same verdict on bisim-related inputs.
 
-2. The framing-theorem postcondition includes
+2. The framing-theorem postcondition was
    `HeapExt s_a s_a' := ∃ extras, s_a'.heap = s_a.heap ++ extras`,
    and in-place `Heap.update` is *not* a prefix extension. So the
-   postcondition is unprovable for the `.set`-accepted branch
+   postcondition was unprovable for the `.set`-accepted branch
    regardless of (1).
 
-Three viable resolutions, in increasing order of generality and
-cost:
+The architecture that closed the case (the `HeapEvolution` +
+policy-respecting-bisim path):
 
-- **Restrict `frame`'s domain to set-free expressions.** Add
-  `SetFreeExpr : Expr → Prop` (recursively true except at
-  `.set _ _`); thread it as a hypothesis through `frame.eval`'s
-  branches; `.set _ _` closes by contradiction. ~150 LOC of
-  predicate threading. The runner's user-calls are set-free, so
-  the restriction doesn't bite the headline result. *Cheap, lots
-  of bookkeeping.* Was implemented and reverted — it was over-
-  engineered for what it bought.
-- **Replace `HeapExt` with a `HeapEvolves` relation** that admits
-  append *and* bisim-respecting in-place update. Add a
-  *policy-respecting-bisim* hypothesis to `WFCtx`:
-  `∀ x_a x_b y_a y_b, ValVis x_a x_b → ValVis y_a y_b →
-  s.policy x_a y_a = s.policy x_b y_b`. Prove
-  `ValVis_aux_evolves`/`EnvVis_aux_evolves` lemmas. Close `.set`
-  via the new constructor of `HeapEvolves`. ~500 LOC. The
-  hypothesis is satisfied by every policy in `verifiedTable` —
-  they all pattern-match on shape, which `ValVis` preserves.
-  *Cleaner; gives a uniform framing theorem.*
-- **Replace `ValVis` with a step-indexed logical relation.**
-  Two values relate iff they implement the same function modulo
-  CE. Operational-equivalence collapses to `ValVis`-equivalence
-  on the relevant pairs. *Deepest fix; major rewrite of the
-  bisimulation infrastructure.*
+- **Cross-side `HeapEvolution s_a s_b s_a' s_b'`** replacing
+  `HeapExt s_a s_a' ∧ HeapExt s_b s_b'`. Carries length
+  monotonicity on each side plus `env_preserve` and `val_preserve`
+  fields (cross-side bisim of envs/values is preserved across the
+  step).
+- **`PolicyRespectsBisim`** invariant on `WFCtx.policy_resp`. The
+  policy gives the same admit/reject decision on bisim-related
+  inputs. Lets the `.set` case argue both sides decide the same
+  way.
+- **`env_eq` and `heap_len_eq`** invariants on `WFCtx`. Ensure
+  `env.lookup x` produces the same `idx` cross-side, so
+  `isMetaMutation` agrees and the heap update targets the same
+  cell on both sides. Maintained through `.letE` (cons-extension
+  with matching alloc indices given `heap_len_eq`).
+- **Strengthened `ValVis_aux` on closures** requires
+  `cenv_a = cenv_b` structurally, ensuring closure cenvs satisfy
+  `env_eq` recursively.
+- **`ValVis_aux_update` / `EnvVis_aux_update`** mutual depth
+  induction (with bounded `< n` precondition on the new-values
+  bisim) for in-place cell updates. The bound is the key trick:
+  it enables a self-update universal-depth lemma via depth-
+  induction with a strengthened IH (`∀ k ≤ K, ValVis_aux k`),
+  breaking the circularity that a `∀ k` precondition would
+  otherwise create.
 
-The headline theorem `multnExact_soundForCE_first_install` does
-**not** depend on this case being closed. The headline only
-invokes `frame.applyDirect` on a *post-install user-call* — the
-user is calling some operator (e.g., `+`) on operands. That call
-doesn't traverse `.set` in any sane runner program, so the open
-`frame.set` case isn't on the trace `frame` actually walks.
-Practically, the `sorry` lives in a case that none of the
-artifact's load-bearing claims pass through.
-
-That said, an honest reflective interpreter should account for
-`.set` in `frame`. The middle option (`HeapEvolves` +
-policy-respecting-bisim) is the natural follow-up — see
-`FUTURE.md` / *Generalizing the infrastructure*. We left the
-`sorry` standing rather than ship a more-elaborate-than-it-needs-
-to-be Path-A scaffolding for it.
+Total: ~700 LOC of new proved infrastructure in `Bisim.lean`.
 
 **Why not just BisimSafe?** A briefly-considered stronger
 hypothesis was `BisimSafe(p) := ∀ old new h, p old new = true →
-∀ n, ValVis_aux n old new h h` (the policy admits only
+∀ n, ValVis_aux n old new h h` (the policy admits only same-side
 `ValVis`-related transitions). `multnExactPolicy` does *not*
 satisfy this — it admits `(.builtinBaseApply, .closure ...)`,
-which are different `Val` constructors and hence not bisim-
-related. *Policy-respecting-bisim* is the weaker, satisfiable
-condition. An earlier version of this document conflated the
-two; it's worth keeping straight.
+which are different `Val` constructors and hence not same-side
+bisim-related. *Policy-respecting-bisim* (which is `ValVis`-
+respecting *cross-side*, not *same-side*) is the weaker,
+satisfiable condition. An earlier version of this document
+conflated the two.
+
+**Outstanding follow-up.** The `multnExact_CE_nonnum_case` proof
+in `Policies.lean` uses an asymmetric `(s, s_alloc)` framing
+setup that no longer satisfies `WFCtx.heap_len_eq`. A single-side
+`applyDirect` prefix-extension lemma (~200-300 LOC) would resolve
+this; see `DUMP3.md`.
 
 ## Risks
 
@@ -734,20 +730,22 @@ two; it's worth keeping straight.
   evaluations, their bodies are equal (we're not compiling), so this
   should hold automatically.
 
-- **The `frame.eval` `.set` case is open.** A `sorry` lives in
-  `Bisim.lean`'s `.set _ _` arm of `frame.eval`. The case requires
-  weakening `HeapExt` to a `HeapEvolves` relation that admits
-  in-place updates, and adding a *policy-respecting-bisim*
-  hypothesis to `WFCtx` — see *Refinements / `.set`* for the
-  design space. The headline theorem
-  `multnExact_soundForCE_first_install` does not depend on this
-  case being closed (its trace doesn't pass through `.set`), so
-  the artifact's load-bearing claims are unaffected. But an
-  honest reflective interpreter should account for `.set` in
-  `frame`; closing this is the natural follow-up.
+- **The `frame.eval` `.set` case is closed.** Achieved by
+  replacing `HeapExt` with cross-side `HeapEvolution`, adding
+  `PolicyRespectsBisim`/`env_eq`/`heap_len_eq` invariants to
+  `WFCtx`, and proving a bounded `ValVis_aux_update` /
+  `EnvVis_aux_update` mutual depth induction. See *Refinements /
+  `.set`* for the design walkthrough.
+
+- **Outstanding sorry in `Policies.lean`.** A single sorry
+  remains: `multnExact_CE_nonnum_case`'s historical asymmetric
+  `(s, s_alloc)` framing setup is incompatible with the new
+  `WFCtx.heap_len_eq` invariant. Resolution path: a single-side
+  `applyDirect` prefix-extension lemma (~200-300 LOC). See
+  `DUMP3.md`.
 
 The first three are sequencing or implementation risks; the last
-records the one open `sorry` in the build.
+records the one outstanding sorry in the build.
 
 ## References
 

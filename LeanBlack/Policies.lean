@@ -26,12 +26,15 @@
   - `multnExact_CE_num_case_vacuous` — proved (numerical operators
     are CE-vacuous).
   - `multnExact_soundForCE_first_install` — fully proved (conditional
-    on the install-protocol facts in `InstallFacts` and the runtime
-    invariants in `RuntimeWF`), modulo the `.set` case of `frame`
-    in `Bisim.lean` which remains `sorry` (open architectural
-    question — see DESIGN.md *Open work*).
-  - `multnExact_CE_nonnum_case` — fully proved (modulo the same
-    `.set`-in-`frame` open).
+    on the install-protocol facts in `InstallFacts`, the runtime
+    invariants in `RuntimeWF`, and the new `PolicyTableRespectsBisim`/
+    `PolicyRespectsBisim s.policy` hypotheses introduced when the
+    `.set` case of `frame.eval` was closed).
+  - `multnExact_CE_nonnum_case` — proved up to a single localized
+    `sorry` for the `WFCtx.heap_len_eq` field. The proof technique
+    sets up an asymmetric `(s, s_alloc)` framing that doesn't satisfy
+    the new `heap_len_eq` invariant; resolution path (single-side
+    `applyDirect` prefix-extension lemma) documented in `DUMP3.md`.
   - `multn_closure_body_unfolds` — fully proved (the deterministic
     eval-trace lemma through the closure body).
 -/

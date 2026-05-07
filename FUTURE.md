@@ -2,13 +2,16 @@
 
 The current development closes a single end-to-end story:
 `multnExactPolicy` is conservative-extension-sound on the first
-admitted install from a clean state. The framing infrastructure
-that makes the proof go through is closed *modulo* the `.set`
-case of `frame.eval`, which remains an open `sorry`. Routes for
-extending, sharpening, or rewriting the result split into three
-families: *extending the verified story*, *generalizing the
-infrastructure* (including closing the `.set` case), and *redoing
-it on different foundations*.
+admitted install from a clean state. **The framing infrastructure
+is fully closed, including the `.set` case of `frame.eval`** (via
+the cross-side `HeapEvolution` + `PolicyRespectsBisim` architecture
+documented below). Routes for extending, sharpening, or rewriting
+the result split into three families: *extending the verified
+story*, *generalizing the infrastructure*, and *redoing it on
+different foundations*.
+
+A single `sorry` remains in `Policies.lean` — see *Outstanding
+sorry* below.
 
 ---
 
@@ -263,57 +266,83 @@ cannot bypass the gate" being a pure type-theoretic property.
 
 ## Generalizing the infrastructure
 
-### Closing `frame.eval`'s `.set` case via `HeapEvolves`
+### ✅ DONE — Closing `frame.eval`'s `.set` case via `HeapEvolution`
 
-This is the open `sorry` in `Bisim.lean`. Two things are needed:
+`Bisim.lean`'s `.set` framing case is closed (`Bisim.lean` has
+zero sorries). The architecture that landed differs from the
+sketch in earlier drafts of this document:
 
-**(a) Replace `HeapExt` with `HeapEvolves`.** `HeapExt s_a s_a' :=
-∃ extras, s_a'.heap = s_a.heap ++ extras` is a *prefix*-extension
-relation; in-place `Heap.update` (the `.set`-accepted branch's
-heap mutation) violates it because the new heap has the same
-length but differs at one index. Weaken to:
-
-```
-def HeapEvolves (h h' : Heap) : Prop :=
-  h.length ≤ h'.length ∧
-  ∀ i v, h[i]? = some v →
-    ∃ v', h'[i]? = some v' ∧ ∀ n, ValVis_aux n v v' h h'
-```
-
-— heap may grow, *and* old indices may be updated, provided the
-new value at each old index is bisim-related to the old. Prove
-`ValVis_aux_evolves` and `EnvVis_aux_evolves` (depth-induction)
-and replace `HeapExt` in `frame`'s postcondition.
-
-**(b) Add a *policy-respecting-bisim* hypothesis to `WFCtx`:**
+**Cross-side `HeapEvolution s_a s_b s_a' s_b'`** (not the same-
+side `HeapEvolves` originally proposed):
 
 ```
-∀ x_a x_b y_a y_b, ValVis x_a x_b → ValVis y_a y_b →
-  s.policy x_a y_a = s.policy x_b y_b
+structure HeapEvolution (s_a s_b s_a' s_b' : RunState) : Prop where
+  len_a : s_a.heap.length ≤ s_a'.heap.length
+  len_b : s_b.heap.length ≤ s_b'.heap.length
+  env_preserve : ∀ n env_a env_b, env_a = env_b → ... →
+    EnvVis_aux n env_a env_b s_a.heap s_b.heap →
+    EnvVis_aux n env_a env_b s_a'.heap s_b'.heap
+  val_preserve : ∀ n v_a v_b, ... →
+    ValVis_aux n v_a v_b s_a.heap s_b.heap →
+    ValVis_aux n v_a v_b s_a'.heap s_b'.heap
 ```
 
-— the policy gives the same answer on bisim-related inputs.
-This is satisfied by every policy in `verifiedTable` (each
-pattern-matches on shape, and `ValVis` on closures requires body
-equality, so shape is preserved). The `.set` case of `frame.eval`
-then closes: both sides decide the same way; both either reject
-(heap unchanged, trivially `HeapEvolves`) or admit with bisim-
-related new values (a single `HeapEvolves.update` step).
+The same-side `HeapEvolves` originally proposed turned out to be
+fundamentally broken for `multnExactPolicy`: it admits
+`.builtinBaseApply → multn-closure`, which are different `Val`
+constructors and so not same-side bisim-related. The cross-side
+formulation works because both sides update with bisim-*related*
+new values; same-side old/new aren't required to relate.
 
-Estimated cost: ~500 LOC of new infrastructure (`HeapEvolves`
-definition and lemmas, the two `_evolves` framing lemmas, the
-`WFCtx` extension, and the `.set` proof itself). Replacing
-`HeapExt` ripples through ~30 sites in `frame`'s proof.
+**`PolicyRespectsBisim` invariant on `WFCtx.policy_resp`**: the
+policy gives the same admit/reject decision on bisim-related
+inputs. This lets the `.set` case argue both sides decide the
+same way.
 
-**Why not `BisimSafe`?** A briefly-considered stronger condition
-was `BisimSafe(p) := ∀ old new h, p old new = true → ∀ n,
-ValVis_aux n old new h h`. `multnExactPolicy` does *not* satisfy
-this: it admits `(.builtinBaseApply, .closure ...)`, which are
-different `Val` constructors and so not bisim-related. The
-*policy-respecting-bisim* condition above is the weaker, satisfied
-condition. Any uniform-framing-across-`.set` follow-up should use
-the weaker condition; an earlier draft of the docs conflated the
-two.
+**`env_eq` and `heap_len_eq` invariants on `WFCtx`**: ensure
+`env.lookup x` produces the same `idx` cross-side, so
+`isMetaMutation` agrees and the heap update targets the same
+cell on both sides. The `heap_len_eq` invariant maintained
+through `.letE` (cons-extension with matching alloc indices).
+
+**Strengthened `ValVis_aux` on closures**: `cenv_a = cenv_b`
+structurally. Ensures closure cenvs satisfy `env_eq` recursively.
+
+**`ValVis_aux_update` / `EnvVis_aux_update`** mutual depth
+induction with strict `< n` bound on the new-values precondition.
+The strict bound is the key trick: it enables a self-update
+universal-depth lemma via depth-induction with a strengthened
+IH (`∀ k ≤ K, ValVis_aux k`), avoiding the circularity that a
+`∀ k` precondition would otherwise create.
+
+Total cost: ~700 LOC of new proved infrastructure. ~30 sites in
+`frame`'s proof updated to the new postcondition.
+
+### Outstanding `sorry` in `Policies.lean`
+
+`multnExact_CE_nonnum_case`'s historical proof technique uses an
+asymmetric `(s, s_alloc)` framing setup (side A at state `s`,
+side B at state `s_alloc` = `s` with the multn closure body's
+pre-allocated arg cells). The new `WFCtx.heap_len_eq` invariant
+fails for this asymmetric setup, leaving a `sorry` for the
+`heap_len_eq` field.
+
+**Resolution path** (~200-300 LOC): a single-side `applyDirect`
+prefix-extension lemma:
+
+```
+applyDirect at heap h gives (r, s') →
+∀ extras, applyDirect at (h ++ extras) gives (r', s'') with
+  ValVis r r' s'.heap s''.heap ∧ ...
+```
+
+Provable by induction on fuel + cases on `op`, mirroring the
+existing framing theorem's `applyDirect` case but for the single-
+side prefix-extension setting (envs are the same on both sides;
+heaps differ by a prefix-relation). Use this lemma to relate side
+A's actual run at `s` to a hypothetical run at `s_alloc`, then
+frame symmetrically on `(s_alloc, s_alloc)` where `heap_len_eq`
+holds trivially.
 
 ### Bundle the per-side `frame` hypotheses
 

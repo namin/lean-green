@@ -72,15 +72,19 @@ Three layers:
   parallel statements for `eval`, `evalList`, `applyVia`,
   `applyDirect`. Built on depth-indexed `ValVis_aux` / `EnvVis_aux`,
   `WFCtx` invariant bundle, `HeapExt` (same-side heap-
-  monotonicity), `StateExt` (cross-side same-policy), `ListValVis`,
-  `ValValid` / `HeapValid` / `EnvValid` validity machinery, plus
-  `applyPrim_bisim` (per-prim bisim respect, ~600 LOC) and
-  `alloc_chain_bisim` (foldl-induction for closure-call arg
-  allocation, ~150 LOC). All cases of `eval`/`evalList`/`applyVia`/
-  `applyDirect` are closed *except* the `.set` case of `frame.eval`,
-  which remains an open `sorry` (see *Open work* below). The
-  `.quote` case is closed by a runtime `closedValB` check on the
-  quoted value, restricting `.quote` to closure-free values.
+  monotonicity via `HeapEvolution`), `StateExt` (cross-side same-
+  policy), `ListValVis`, `ValValid` / `HeapValid` / `EnvValid`
+  validity machinery, `PolicyRespectsBisim` (cross-side gate
+  symmetry on bisim-related inputs), plus `applyPrim_bisim`
+  (per-prim bisim respect, ~600 LOC), `alloc_chain_bisim` and
+  `allocStep_chain_aligned` (foldl-induction for closure-call arg
+  allocation, ~200 LOC), and `ValVis_aux_update` /
+  `EnvVis_aux_update` (mutual depth induction for in-place cell
+  update preserving bisim, ~250 LOC). **All cases of
+  `eval`/`evalList`/`applyVia`/`applyDirect` are closed**, including
+  the `.set` case of `frame.eval`. The `.quote` case is closed by a
+  runtime `closedValB` check on the quoted value, restricting
+  `.quote` to closure-free values.
 
 Value relation `ValVis` is syntax-based data refinement à la CakeML
 (Kumar 2016 §3): two closures relate iff their bodies are equal and
@@ -97,9 +101,17 @@ heaps without requiring a prefix relation.
 
 ## Status
 
-**One `sorry` remains** — the `.set _ _` case of `frame.eval` in
-`Bisim.lean`. The `.quote v` case of `frame.eval` and the
-`multn_closure_body_unfolds` trace lemma are both closed.
+**`Bisim.lean` has zero sorries.** The `.set _ _` case of
+`frame.eval` is fully proved using the cross-side `HeapEvolution`
+infrastructure (`PolicyRespectsBisim` invariant on the active
+policy, `env_eq` and `heap_len_eq` invariants on `WFCtx`, and the
+`ValVis_aux_update` / `EnvVis_aux_update` mutual depth induction).
+
+**One `sorry` remains in `Policies.lean`** — an architectural
+follow-up: `multnExact_CE_nonnum_case`'s historical asymmetric
+`(s, s_alloc)` framing setup is incompatible with the new
+`heap_len_eq` invariant on `WFCtx`. Resolution path is documented
+in `DUMP3.md` (single-side `applyDirect` prefix-extension lemma).
 
 ### Concessions
 
@@ -157,44 +169,44 @@ Two concessions worth flagging up-front:
    relations. *Practical impact:* none. The only `.quote` use in
    this development is `.quote .nilV` in `Smoke.lean`.
 
-### Open work — the `.set` case of `frame.eval`
+### `.set` framing — closed (historical note)
 
-The framing theorem cannot, in general, hold across reflective
-`.set` for policies that admit *operationally* CE-extending
-modifications without requiring *structural* (`ValVis`)
-equivalence. Concretely: `multnExactPolicy` admits replacing
-`.builtinBaseApply` (a tag constructor) with a `.closure` value
-(a different constructor) — these are different `Val` constructors
-and so not `ValVis_aux`-related by inversion. Closing this case
-requires a real architectural choice, of three:
+The framing theorem holds across reflective `.set` for policies
+that admit *operationally* CE-extending modifications without
+requiring *structural* (`ValVis`) equivalence. Concretely:
+`multnExactPolicy` admits replacing `.builtinBaseApply` (a tag
+constructor) with a `.closure` value (a different constructor) —
+these are different `Val` constructors and so not `ValVis_aux`-
+related by inversion. The trick is that the bisim is *cross-side*:
+`HeapEvolution s_a s_b s_a' s_b'` records that env-bisim and val-
+bisim are preserved cross-side across the step, not that same-side
+old/new are bisim-related (which is impossible for multn).
 
-- **Restrict `frame`'s domain to set-free expressions** — cheap,
-  lots of bookkeeping (~150 LOC of `SetFreeExpr` / `SetFreeVal` /
-  `HeapSetFree` predicates threaded through ~20 `frame` cases).
-  Was tried (and reverted: was over-engineered for what it bought).
-- **Replace `HeapExt` with a `HeapEvolves` relation** — heap may
-  grow *or* be updated at an existing index with a value related
-  to the old one by a *policy-respecting-bisim* invariant. Add
-  the policy-respecting-bisim hypothesis to `WFCtx`; prove
-  `ValVis_aux_evolves` / `EnvVis_aux_evolves` lemmas. Cleaner,
-  more infrastructure (~500 LOC). The hypothesis is satisfied by
-  every policy in `verifiedTable`.
-- **Replace `ValVis` with a step-indexed logical relation** —
-  deepest fix; structural `body_a = body_b` requirement on
-  closures becomes operational. Major rewrite of bisimulation
-  infrastructure.
+The architecture that closed this case:
 
-The headline theorem `multnExact_soundForCE_first_install` does
-not depend on `.set`-in-`frame` being closed. Internally it
-invokes `frame.applyDirect` on a post-install user-call, which
-is set-free in any sane runner program — `.set` doesn't appear
-in the trace `frame` actually walks. `multn_closure_body_unfolds`
-likewise stays closed. The `sorry` lives in a case that none of
-the current artifact's load-bearing claims walk through.
+- **Cross-side `HeapEvolution`** replacing `HeapExt s_a s_a' ∧
+  HeapExt s_b s_b'`. Captures cross-side env- and val-bisim
+  preservation across an in-place update.
+- **`PolicyRespectsBisim`** invariant on `WFCtx.policy_resp`. The
+  active policy gives the same admit/reject decision on bisim-
+  related arguments — this lets the `.set` case argue both sides
+  decide the same way.
+- **`env_eq` and `heap_len_eq`** invariants on `WFCtx`. Ensure
+  `env.lookup x` produces the same `idx` cross-side, so
+  `isMetaMutation` agrees and the heap update targets the same
+  cell on both sides.
+- **`ValVis_aux_update` / `EnvVis_aux_update`** mutual depth
+  induction (with bounded `< n` precondition) for in-place cell
+  updates. The bound enables a self-update universal-depth lemma
+  via depth-induction with a strengthened IH.
 
-See `FUTURE.md` / *Generalizing the infrastructure* for the
-design space if you want to close the case rather than route
-around it.
+Total: ~700 LOC of new proved infrastructure in `Bisim.lean`.
+
+Outstanding follow-up (architectural, in `Policies.lean`):
+`multnExact_CE_nonnum_case`'s historical asymmetric framing setup
+(`s` on side A, `s_alloc` on side B) doesn't satisfy the new
+`heap_len_eq` invariant. A single-side `applyDirect` prefix-
+extension lemma would resolve this; see `DUMP3.md` for details.
 
 ## Layout
 
@@ -205,7 +217,7 @@ lean-green/
 ├── LeanBlack.lean                 — top-level imports
 ├── LeanBlack/
 │   ├── Black.lean                 — Val, Expr, Env, Heap, RunState, eval, ...
-│   ├── Bisim.lean                 — ValVis, EnvVis, WFCtx, HeapExt, framing theorems
+│   ├── Bisim.lean                 — ValVis, EnvVis, WFCtx, HeapEvolution, framing theorems
 │   ├── Policies.lean              — BlackPolicy, library, multnExact_soundForCE_first_install
 │   ├── Bedrock.lean               — `aws bedrock-runtime invoke-model` wrapper
 │   ├── Elab.lean                  — proposal elaboration via `lake env lean --run`

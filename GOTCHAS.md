@@ -199,19 +199,21 @@ indexed scaffolding, Lean rejects it as not-structurally-decreasing.
 Don't fight the depth-indexing; it's the standard CakeML approach
 for exactly this reason.
 
-### 12. The `frame.eval` `.set` case is `sorry`'d
+### 12. The `frame.eval` `.set` case is closed (FIXED)
 
-```lean
-| set _ _ => sorry
-```
+The `.set` case of `frame.eval` is now fully proved using a
+cross-side `HeapEvolution` infrastructure plus `PolicyRespectsBisim`,
+`env_eq`, and `heap_len_eq` invariants on `WFCtx`. The proof
+threads these invariants through the framing theorem and uses a
+mutual depth induction `ValVis_aux_update` / `EnvVis_aux_update`
+to handle in-place cell updates. See `DUMP3.md` for the design
+walkthrough.
 
-Open architectural question — see the *Open work* section of
-`README` and the *Refinements / `.set`* section of `DESIGN`.
-The headline theorem `multnExact_soundForCE_first_install` does
-*not* depend on this case (its trace doesn't pass through
-`.set`), but if you're extending the framing infrastructure to
-cover programs that *do* contain reflective `.set` in their
-bodies, you'll hit it.
+A single `sorry` remains in `Policies.lean`'s
+`multnExact_CE_nonnum_case` (the historical asymmetric framing
+setup `(s, s_alloc)` doesn't satisfy the new `heap_len_eq`
+invariant — needs a single-side `applyDirect` prefix-extension
+lemma to resolve cleanly).
 
 ### 13. Closure-case args allocate via foldl on `args.zip ps`
 
