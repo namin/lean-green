@@ -32,27 +32,52 @@ See [`DESIGN.md`](DESIGN.md) for the full design.
 
 Three layers:
 
-- **Structural** (`Policies.lean`). `numGuardPolicy` admits exactly
-  the recognized syntactic shape; `multnExactPolicy` admits exactly
-  the strict multn pattern with delegating else-branch. Inversions of
-  pattern-matching definitions, by case analysis.
+- **Structural** (`Policies.lean`). `numGuardPolicy` admits any
+  closure whose body begins `(if (num? <var>) ... ...)` (loose,
+  intentionally not CE-sound — see *Policy table* below).
+  `multnExactPolicy` admits any closure whose body has the shape
+  `(if (num? op) <numeric-branch> (orig op args))` *with the
+  delegating else-branch fixed* and `cenv` binding `orig` to the
+  current `base-apply` and `num?` to `.prim "num?"`. The numeric
+  branch is structurally a wildcard at the policy level; CE
+  soundness in the headline theorem follows because the numeric
+  branch never executes for non-numeric operators (it's the only
+  path through `applyDirect builtinBaseApply` for `.num` ops, which
+  is `none`).
 
 - **Operational** (`Policies.lean`). The headline theorem
   `multnExact_soundForCE_first_install`: `multnExactPolicy` is sound
   for `ConservativeExt`. Side-conditions bundled into two load-
   bearing structures:
 
+  Informal sketch (the actual signature in `Policies.lean` adds
+  policy-table soundness, deep-validity, and shift-respect side
+  conditions):
+
   ```
   theorem multnExact_soundForCE_first_install
-      (h_admit : multnExactPolicy .builtinBaseApply new = true)
+      (h_admit : multnExactPolicy ctx .builtinBaseApply new = true)
       (h_fuel  : fuel ≥ 2)
+      (hresp_pt   : PolicyTableRespectsBisim ptable)
+      (hresp_init : PolicyRespectsBisim s.policy)
       (h_old   : callAsBaseApply fuel ptable .builtinBaseApply op operands metaEnv s
                    = some (r, s'))
-      (install : InstallFacts new s.heap)
-      (wf      : RuntimeWF new metaEnv op operands s.heap) :
+      (install : InstallFacts .builtinBaseApply new s.heap)
+      (wf      : RuntimeWF new metaEnv op operands s.heap)
+      -- Deep-validity (runtime-built heap maintains alloc-only growth):
+      (h_heap_deep : HeapDeep s.heap)
+      (h_op_deep : ValDeep op s.heap)
+      (h_operands_deep : ListValDeep operands s.heap)
+      (h_meta_deep : EnvDeep metaEnv s.heap)
+      -- Shift-respect (every `BlackPolicy` here is structural):
+      (h_pt_shift  : PolicyTableRespectsShift s.heap.length _ ptable)
+      (h_pol_shift : PolicyRespectsShift s.heap.length _ s.policy) :
       ∃ fuel' s'' r',
         callAsBaseApply fuel' ptable new op operands metaEnv s = some (r', s'') ∧
-        ValVis r r' s'.heap s''.heap
+        ValVis_weak r r' s'.heap s''.heap ∧
+        s'.policy = s''.policy ∧
+        HeapValid s''.heap ∧
+        s.heap.length ≤ s''.heap.length
   ```
 
   - **`InstallFacts`** — install-time facts (`OrigBoundIn` +
@@ -60,13 +85,18 @@ Three layers:
   - **`RuntimeWF`** — runtime validity invariants (`HeapValid`,
     `EnvValid metaEnv`, `EnvValid (cenvOf new)`, `ValValid op`,
     `ListValValid operands`); the runner naturally maintains them.
+  - **Deep validity** — `HeapDeep`/`ValDeep`/`EnvDeep`/`ListValDeep`
+    are the *deep* validity predicates (every embedded index, not
+    just looked-up bindings, is in-bounds). `runtime_invariants_initial`
+    discharges them for the runner's startup state.
+  - **Shift-respect** — `PolicyRespectsShift` is the shift analog of
+    `PolicyRespectsBisim`; `verifiedTable_respects_shift` and
+    `acceptAllPolicy_respects_shift` discharge the relevant cases.
+  - The conclusion is `ValVis_weak` (not `ValVis`) — see
+    [`WAND.md`](WAND.md), *Why the headline CE statement is `_weak`*.
 
   The fuel bound is trivially satisfied at the call site
-  (`Smoke.lean` runs at `fuel = 10000`). **Proved**, modulo the
-  open `.set`-in-`frame` case below — the headline theorem only
-  invokes `frame.applyDirect` on the post-install user-call (which
-  is set-free in any sane runner program), so the open `.set` case
-  doesn't bite the headline result in practice.
+  (`Smoke.lean` runs at `fuel = 10000`). **Proved**, sorry-free.
 
 - **Infrastructure** (`Bisim.lean`). The framing theorem `frame` —
   parallel statements for `eval`, `evalList`, `applyVia`,
@@ -129,6 +159,56 @@ covers the default initial policy. `initState_deep` and
 `runtime_invariants_initial` establish `HeapDeep` / `EnvDeep` /
 `PolicyTableRespectsShift` / `PolicyRespectsShift` for the runtime
 starting state.
+
+### Policy table
+
+`verifiedTable = [rejectAll, numGuardPolicy, multnExactPolicy]`.
+
+| Policy              | CE-sound?                              | Purpose                                |
+|---------------------|----------------------------------------|----------------------------------------|
+| `rejectAll`         | yes (vacuously — admits nothing)       | baseline                               |
+| `numGuardPolicy`    | **no** — else-branch unconstrained     | loose demo / adversarial contrast      |
+| `multnExactPolicy`  | yes (first install, conditional)       | the headline operational theorem       |
+
+"Verified table" means each entry is verified to be
+`PolicyRespectsBisim` and `PolicyRespectsShift`, *not* that each
+entry is CE-sound. CE soundness is per-policy and stated by the
+relevant theorem (`multnExact_soundForCE_first_install` for
+`multnExactPolicy`).
+
+### Known limitations
+
+- **First-install only.** `multnExact_soundForCE_first_install`
+  covers the first install (where `oldVal = .builtinBaseApply`).
+  Multi-install (subsequent multn replacements) requires a
+  parametric variant; the bridge lemma
+  `multnExactPolicy_implies_InstallFacts` is already
+  `oldVal`-parametric, but the headline soundness theorem isn't
+  yet wrapped to use it.
+- **`CE_weak`, not `CE`.** The headline operational theorem
+  concludes `ValVis_weak`, the relaxed bisim that drops Lean-equal-
+  `cenv` requirements on closures. See [`WAND.md`](WAND.md), *Why
+  the headline CE statement is `_weak`*.
+- **`multnExactPolicy`'s numeric branch is unconstrained at the
+  policy level.** Any closure body of the form
+  `(if (num? op) <anything> (orig op args))` is admitted (provided
+  cenv binds `orig` and `num?` correctly). The headline theorem
+  goes through because the only `applyDirect builtinBaseApply` path
+  for non-`.num` operators is the `else` branch. Strengthening the
+  numeric branch (e.g., to a fixed `mul-list`-based body, or via
+  a `NoSetNoInstallNoEm` syntactic predicate) is future work.
+- **LLM elaboration is not sandboxed.** The proposer-elaborator
+  runs Lean against model-generated text via `lake env lean --run`;
+  malicious top-level Lean commands take effect at elaboration
+  time, before any runtime gate runs. This is demonstration
+  scaffolding, not a security boundary — see
+  [`LLM_PROOF_CASCADE.md`](LLM_PROOF_CASCADE.md).
+- **No machine-checked top-level "runner is sound" theorem.** The
+  chain `multnExact_soundForCE_first_install → ... → runner` is
+  proved up to the operational theorem; the runner's metaprogram
+  is not itself verified, and there is no top-level theorem
+  stating "running the runner under the verified table preserves
+  CE." All public theorems are about the operational kernel.
 
 **`LeanBlack/Wand.lean`** carries the value-level existential
 defeat of Wand 1998 — non-syntactically-equal expressions (a

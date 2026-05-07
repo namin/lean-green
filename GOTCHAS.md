@@ -83,10 +83,12 @@ inductive Val where
 
 `ValVis_aux` between `.builtinBaseApply` and a `.closure ...`
 value is **`False`** by inversion — they're different
-constructors. This is the heart of the `.set` case being open in
-`frame.eval`: `multnExactPolicy` admits replacing
-`.builtinBaseApply` with a multn closure, which is operationally
-CE-extending but structurally non-`ValVis`-related.
+constructors. This is exactly why the headline operational theorem
+concludes `ValVis_weak` rather than `ValVis`: `multnExactPolicy`
+admits replacing `.builtinBaseApply` with a multn closure, which is
+operationally CE-extending but structurally non-`ValVis`-related.
+The relaxed `ValVis_weak` allows different constructors when the
+behavioral observation matches; see `WAND.md` for the full story.
 
 ### 5. `applyDirect`'s `.builtinBaseApply` arm expects unwrapped args
 
@@ -152,9 +154,9 @@ Same-side heap-monotonicity is **prefix extension only**, not
 update-allowed. Any in-place mutation (e.g., `Heap.update` from a
 successful `.set`) violates this — same-length heaps differ at one
 index, so `extras = []` is required, but the heaps aren't equal.
-This is exactly why `.set` is open in `frame`. See
-`FUTURE.md` / *Generalizing the infrastructure / Closing
-`frame.eval`'s `.set` case via `HeapEvolves`* for the resolution.
+The `.set` case in `frame.eval` is closed via the cross-side
+`HeapEvolution` relation (which captures cross-side env- and val-
+bisim preservation across an in-place update), not via `HeapExt`.
 
 ### 9. `StateExt` is *just* policy equality, not heap-prefix
 

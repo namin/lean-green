@@ -7544,22 +7544,14 @@ theorem applyDirect_heap_extend_via_shift
       (heap_mono fuel).2.2.2 ptable op operands metaEnv s r s' h_app
     omega
 
-/-- **Prefix-extension lemma** — refactored to use the shift path
-    (`applyDirect_heap_extend_via_shift`) instead of `prefix_ext`.
-    The Deep validity hypotheses (`HeapDeep` etc.) and
-    `PolicyRespectsShift` hypotheses are sorried as residual gaps:
-    they hold for runtime-built heaps and verified policies, but
-    formal proofs require either (a) tracking Deep validity as a
-    runtime invariant through `eval` or (b) per-policy
-    shift-respecting proofs (analogous to existing
-    `multnExactPolicy_respects_bisim`).
-
-    Now takes Deep-validity (`HeapDeep`/`ValDeep`/`ListValDeep`/`EnvDeep`)
-    and `PolicyRespectsShift` hypotheses as additional preconditions —
-    callers provide them. Both hold for runtime-built data: Deep
-    validity is a runtime invariant (alloc-only growth + Deep `.set`
-    writes), and `PolicyRespectsShift` is provable per verified policy
-    (analogous to existing `multnExactPolicy_respects_bisim`). -/
+/-- **Prefix-extension lemma** — proved via `shift_respect`
+    (specifically `applyDirect_heap_extend_via_shift`). Takes
+    Deep-validity (`HeapDeep`/`ValDeep`/`ListValDeep`/`EnvDeep`) and
+    `PolicyRespectsShift` hypotheses as additional preconditions;
+    callers discharge them. For the runner's startup state these
+    are all proven: `runtime_invariants_initial` gives Deep
+    validity, `verifiedTable_respects_shift` and
+    `acceptAllPolicy_respects_shift` give the policy hypotheses. -/
 theorem applyDirect_heap_extend_weak
     {fuel : Nat} {ptable : PolicyTable} {op : Val} {operands : List Val}
     {metaEnv : Env} {s : RunState}

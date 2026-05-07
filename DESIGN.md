@@ -128,12 +128,12 @@ admission discharges exactly the `InstallFacts` precondition,
 collapsing the gap between what the kernel proof requires and
 what the runtime gate can establish.
 
-The proof is closed *modulo* the open `.set` case of `frame.eval`
-in `Bisim.lean` (see *Open work* below). The headline theorem only
-invokes `frame.applyDirect` on a post-install user-call, and that
-call's trace doesn't pass through `.set` for any sane runner
-program — so the open `frame.set` case doesn't bite the headline
-result in practice.
+The proof is closed (sorry-free). The `.set` case of `frame.eval`
+is closed via the cross-side `HeapEvolution` infrastructure
+(`PolicyRespectsBisim` invariant + `ValVis_aux_update` /
+`EnvVis_aux_update` self-update depth induction); the
+prefix-extension lemma `applyDirect_heap_extend_weak` is closed
+via the functional-shift path (`shift_respect`).
 
 **Infrastructure.** The framing theorem that makes the operational
 proof possible (`applyDirect` branch shown; the four mutual
@@ -331,7 +331,8 @@ lean-green/
 │   ├── Bisim.lean           — ValVis, EnvVis, StateExt, HeapExt,
 │   │                          ValValid / HeapValid / EnvValid validity,
 │   │                          applyPrim_bisim, alloc_chain_bisim,
-│   │                          framing theorem `frame` (open: `.set`)
+│   │                          framing theorem `frame` + functional shift
+│   │                          (`shift_respect`, applyDirect_heap_extend_via_shift)
 │   ├── Policies.lean        — BlackPolicy, library, verifiedTable,
 │   │                          InstallFacts / RuntimeWF bundled hypotheses,
 │   │                          multnExact_soundForCE_first_install
@@ -440,13 +441,14 @@ several supporting abstractions (`WFCtx`, `HeapExt`, `ListValVis`,
   spliced-Lean-source elaboration + one-round orchestrator. (Ports
   cleanly from the lean-grey precursor.)
 
-Total: ~4500 LOC at the time of writing, with `.quote`, `.set`, and
-the inner trace of `multnExact_CE_nonnum_case` still open. The
-framing theorem alone is the bulk: each of the four mutual
-functions has many cases, each requiring 30-150 LOC following
-established proof templates. The `applyPrim_bisim` and
-`alloc_chain_bisim` helpers were ~750 LOC of unanticipated
-infrastructure on top of the framing proper.
+Total: ~10K LOC, sorry-free across `Bisim.lean`, `Black.lean`, and
+`Policies.lean`. The framing theorem alone is the bulk: each of the
+four mutual functions has many cases, each requiring 30-150 LOC
+following established proof templates. The `applyPrim_bisim`,
+`alloc_chain_bisim`, and the functional-shift infrastructure
+(`shift_respect`, `valVis_self_shift`, `policy_shift_preserved`,
+`shift_applyPrim`) account for the bulk on top of the framing
+proper.
 
 ## Demo
 
@@ -641,7 +643,7 @@ alternative (additional hypotheses on `frame` rather than narrowing
 threading a `ValValid v` hypothesis through every `frame.eval`
 recursive case, where `.quote` only appears as a leaf.
 
-### `.set` (open)
+### `.set` (closed)
 
 The `.set` case in framing involves the meta-mutation policy gate:
 when a `set!` targets a meta-env binding, `s.policy oldVal newVal`

@@ -30,11 +30,11 @@
     invariants in `RuntimeWF`, and the new `PolicyTableRespectsBisim`/
     `PolicyRespectsBisim s.policy` hypotheses introduced when the
     `.set` case of `frame.eval` was closed).
-  - `multnExact_CE_nonnum_case` — proved up to a single localized
-    `sorry` for the `WFCtx.heap_len_eq` field. The proof technique
-    sets up an asymmetric `(s, s_alloc)` framing that doesn't satisfy
-    the new `heap_len_eq` invariant; resolution path (single-side
-    `applyDirect` prefix-extension lemma) documented in `DUMP3.md`.
+  - `multnExact_CE_nonnum_case` — fully proved. The previous
+    asymmetric `(s, s_alloc)` framing has been replaced by the
+    functional-shift prefix-extension lemma
+    `applyDirect_heap_extend_via_shift` (no `WFCtx`-style cross-
+    side invariants required).
   - `multn_closure_body_unfolds` — fully proved (the deterministic
     eval-trace lemma through the closure body).
 -/
