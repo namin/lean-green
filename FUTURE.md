@@ -12,36 +12,26 @@ it on different foundations*.
 
 ---
 
-## Hardening the proposal-to-admission seam (next-milestone)
+## Hardening the proposal-to-admission seam
 
-The single most important next step is closing the gap between
-the verified theorem and the executable admission path. As the
-README's *Concession 0* notes,
+Items 1, 3, and 6 of this roadmap have **landed**. Items 2, 4,
+5, and 7 remain.
+
+The original gap, as the README's *Concession 0* notes:
 `multnExact_soundForCE_first_install` requires install-protocol
 facts (`InstallFacts`: `OrigBoundIn`, `NumQBoundIn`) that the
-runtime gate cannot inspect, and the runner currently admits
+runtime gate originally couldn't inspect, and the runner admits
 under `numGuardPolicy` (loose, not CE-sound) rather than
-`multnExactPolicy`. Six concrete items, in priority order:
+`multnExactPolicy`.
 
-### 1. Freeze `s.policy` before evaluating `.set`'s RHS
+### 1. ✅ DONE — Freeze `s.policy` before evaluating `.set`'s RHS
 
-`Black.lean`'s `.set` clause currently reads `s'.policy` —
-*after* the RHS has run. A proposal can therefore call
-`installPolicy` mid-RHS to downgrade the gate before the final
-write is checked. Fix:
-
-```lean
-| .set x e =>
-    let gate := s.policy   -- ← freeze
-    match eval n ptable e env metaEnv s with
-    | some (v, s') =>
-        ...
-        if gate oldVal v then ...
-```
-
-This closes the policy-downgrade attack. It does not address
-other RHS effects (heap mutation, further `.set`s) — those
-require the *restricted-proposal-syntax* item below.
+`Black.lean`'s `.set` now snapshots `gate := s.policy` before
+evaluating `e`, then checks `gate ctx oldVal v` after `e`
+completes. `installPolicy` calls inside `e` still take effect
+post-`.set` but don't authorize the current `.set`. Tested in
+`Smoke.lean` scene 3 (`test_strict_freeze_admits_install`,
+`test_strict_freeze_post_install_locked`). See `GOTCHAS.md` #1.
 
 ### 2. Restrict admissible proposals to direct `.lam` syntax
 
@@ -52,50 +42,42 @@ The trusted installer should accept only
 ```
 
 — not arbitrary `Expr` that happens to evaluate to a closure.
-This rules out
+With item 3 landed, the runtime's `multnExactPolicy` *already*
+catches the shadowed-`orig` attack via the `OrigBoundIn` check,
+so the practical risk is reduced. But syntactic restriction at
+the elaboration layer is still a defense-in-depth win, and it
+rules out `.set`-ful preludes in the RHS that item 1 doesn't
+address.
 
-```
-.letE "orig" (.num 0) <| .lam ... body   -- shadows captured `orig`
-```
+Concretely: replace the LLM's "any Black `Expr`" interface with
+a "Lean-checked `body` expression" interface; the installer
+wraps it in `.lam` against the trusted Black runtime's `cenv`
+(which actually holds `base-apply` = the previous gate).
 
-and any `.set`-ful prelude in the RHS. Concretely, replace the
-LLM's "any Black `Expr`" interface with a "Lean-checked `body`
-expression" interface; the installer wraps it in `.lam` against
-the trusted Black runtime's `cenv` (which actually holds
-`base-apply` = the previous gate).
+### 3. ✅ DONE — Extend `BlackPolicy` to take a `MutationCtx`
 
-### 3. Extend `BlackPolicy` to take a `MutationCtx`
+`BlackPolicy` is now `MutationCtx → Val → Val → Bool`. The ctx
+carries the target name, heap, env, metaEnv, and index.
+`multnExactPolicy` checks `ctx.target = "base-apply"` *and*
+verifies `OrigBoundIn` (closure cenv binds `"orig"` to a heap
+cell holding `.builtinBaseApply`) *and* `NumQBoundIn` (cenv
+binds `"num?"` to `.prim "num?"`) against the live heap.
 
-The `Val → Val → Bool` signature throws away the target name,
-the heap, the metaEnv, and the index — all of which the
-`InstallFacts` predicates require. The fix mirrors the review:
-
-```lean
-structure MutationCtx where
-  target  : String
-  heap    : Heap
-  env     : Env
-  metaEnv : Env
-  index   : Nat
-
-abbrev BlackPolicy := MutationCtx → Val → Val → Bool
-```
-
-`multnExactPolicy` then can check `target = "base-apply"` *and*
-that `OrigBoundIn` and `NumQBoundIn` hold structurally on the
-proposed closure's cenv against the live heap. The theorem's
-`InstallFacts` precondition becomes a *runtime-checkable*
-property that the policy gate actually establishes.
+The bridge lemma `multnExactPolicy_implies_InstallFacts` proves
+that runtime admission discharges exactly the install-protocol
+facts the headline theorem requires. Tested in `Smoke.lean`
+scene 3 — shadowed-`orig`, wrong target, `numGuard`-shaped
+malicious all refused.
 
 ### 4. Switch the runner to `multnExactPolicy` + a trusted installer
 
-With (1)–(3) in place, `Elab.lean` and `Runner.lean` switch
-their hardcoded `installPolicy idx_numGuard` to
-`installPolicy idx_multnExact`. The trusted installer is the
-piece that constructs the closure in the runtime's
-`base-apply`-binding `cenv` (so `OrigBoundIn` is true by
-construction) and calls the policy gate, which checks
-`NumQBoundIn` against the heap.
+With (1) and (3) landed, this is now mostly a config flip in
+`Elab.lean` (`installPolicy 1` → `installPolicy 2` for
+`idx_multnExact`) plus an updated prompt in `Runner.lean`. The
+trusted installer can stay as a thin wrapper that just calls
+`(em (let orig base-apply (set! base-apply <PROP>)))`; the
+runtime gate will now actually enforce the install-protocol
+facts.
 
 ### 5. Strengthen `CE` with post-state conditions
 
@@ -123,31 +105,28 @@ property to `CE_oneCallResult` and reserve `CE` for the
 strengthened version, or strengthen in place and update the
 headline theorem accordingly.
 
-### 6. Adversarial smoke tests + non-zero CI exit
+### 6. ✅ DONE — Adversarial smoke tests + non-zero CI exit
 
-`Smoke.lean` now exits non-zero on failure (a Tier-1 fix already
-landed). The next step is adding tests that *should fail* under
-the current runner, framing each as a regression target the
-admission-protocol fixes above must close:
+`Smoke.lean` exits non-zero on failure and includes scene 3
+("strict-governed + adversarial") with seven tests under
+`multnExactPolicy`:
 
-- `numGuard`-shaped malicious wrapper (passes `numGuardPolicy` +
-  the witness, breaks `(+ 1 2)`).
-- Shadowed-`orig` wrapper (passes `multnExactPolicy`, violates
-  `OrigBoundIn` — should be rejected once item 2 lands).
-- RHS-side `installPolicy` downgrade (should be rejected once
-  item 1 lands).
-- Mutation of `"+"` from inside proposal evaluation (should be
-  rejected once item 3 lands; the policy can check the target
-  name).
-- Proposal with `.em` nesting (the development is single-stage
-  meta).
-- Proposal with `.set` in the RHS prelude before the canonical
-  `.lam`.
+- multn install admitted, `(+ 1 2) ⇒ 3` preserved.
+- `numGuard`-shaped malicious wrapper refused (shape doesn't
+  match strict multn pattern).
+- Shadowed-`orig` wrapper refused (runtime `OrigBoundIn` check).
+- TOCTOU `installPolicy`-mid-RHS: install proceeds under the
+  frozen pre-RHS gate; subsequent mutations locked by the
+  downgrade that took effect post-`.set`.
+- Wrong target (`+` instead of `base-apply`) refused (runtime
+  `target = "base-apply"` check).
 
-Each test specifies what the runner currently does (admits
-incorrectly) and what it must do post-fix (reject). The CI
-target moves from "does the build pass" to "does the runner
-reject every adversarial proposal we've enumerated."
+Two adversarial cases not yet exercised: proposal with `.em`
+nesting, and `.set`-ful prelude in RHS before the canonical
+`.lam`. Both are mostly defense-in-depth — the current
+`multnExactPolicy` already catches the resulting shapes — but
+adding them as explicit smoke entries would complete the
+adversarial coverage.
 
 ### 7. Sandbox the proposal elaboration path
 

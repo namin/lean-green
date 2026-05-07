@@ -73,13 +73,13 @@ abbrev BlackPolicy.SoundForCE (p : BlackPolicy) : Prop := p.Sound CE
 /-- Admits everything. **Unsound** for any non-trivial floor. Included
     for the un-governed-vs-governed contrast in the demo. Not in the
     verified table. -/
-def acceptAll : BlackPolicy := fun _ _ => true
+def acceptAll : BlackPolicy := fun _ _ _ => true
 
 /-- Admits nothing. Trivially sound for any `P`. -/
-def rejectAll : BlackPolicy := fun _ _ => false
+def rejectAll : BlackPolicy := fun _ _ _ => false
 
 theorem rejectAll_soundForCE : rejectAll.SoundForCE := by
-  intro _ _ h; simp [rejectAll] at h
+  intro _ _ _ h; simp [rejectAll] at h
 
 /-! ### Predicates -/
 
@@ -133,7 +133,7 @@ theorem valToList_listToVal (xs : List Val) :
     non-numeric operators). For CE we use the stricter
     `multnExactPolicy` below. -/
 
-def numGuardPolicy : BlackPolicy := fun _old new =>
+def numGuardPolicy : BlackPolicy := fun _ctx _old new =>
   match new with
   | .closure [_, _] body _ =>
       match body with
@@ -151,7 +151,7 @@ def NumGuardShape (v : Val) : Prop :=
 
 theorem numGuard_sound_for_shape :
     numGuardPolicy.Sound (fun _ new => NumGuardShape new) := by
-  intro _ new h
+  intro _ _ new h
   unfold numGuardPolicy at h
   split at h
   · split at h
@@ -164,22 +164,51 @@ theorem numGuard_sound_for_shape :
     · simp at h
   · simp at h
 
-/-! ### `multnExactPolicy` — strict multn shape
+/-! ### `multnExactPolicy` — strict multn shape + install-protocol check
 
-    The exact pattern: `(λ (op args) (if (num? op) <then> (orig op args)))`.
-    The else-branch must delegate to a captured `orig`. This is the
-    literal multn pattern, and the only structurally-recognizable
-    shape for which CE-soundness is plausible (given install-protocol
-    hypotheses on the captured env). -/
+    Admits exactly the multn pattern:
+    `(λ (op args) (if (num? op) <then> (orig op args)))`,
+    and verifies the install-protocol facts at runtime against the
+    live mutation context:
 
-def multnExactPolicy : BlackPolicy := fun _old new =>
-  match new with
-  | .closure ["op", "args"]
-      (.ifte (.primApp (.var "num?") [.var "op"])
-             _
-             (.primApp (.var "orig") [.var "op", .var "args"]))
-      _ => true
-  | _ => false
+    - `ctx.target = "base-apply"` (only `base-apply` mutations are
+      admitted; mutating `"+"` etc. is refused even if shape matches).
+    - the closure's captured `orig` cell holds `.builtinBaseApply`
+      (so post-install `(orig op args)` dispatches to the builtin).
+    - the closure's captured `num?` cell holds `.prim "num?"`
+      (so the body's cond evaluation can resolve).
+
+    These checks correspond exactly to the `InstallFacts` predicate
+    used by `multnExact_soundForCE_first_install`; the bridge lemma
+    `multnExactPolicy_implies_InstallFacts` below witnesses this. -/
+
+def multnExactPolicy : BlackPolicy := fun ctx _old new =>
+  -- Target restriction.
+  (ctx.target == "base-apply") &&
+  -- Structural shape + install-protocol checks.
+  (match new with
+   | .closure ["op", "args"]
+       (.ifte (.primApp (.var "num?") [.var "op"])
+              _
+              (.primApp (.var "orig") [.var "op", .var "args"]))
+       cenv =>
+       -- OrigBoundIn check: cenv binds "orig" to a heap cell
+       -- holding .builtinBaseApply.
+       (match cenv.lookup "orig" with
+        | some idx_o =>
+            match ctx.heap[idx_o]? with
+            | some .builtinBaseApply => true
+            | _ => false
+        | none => false) &&
+       -- NumQBoundIn check: cenv binds "num?" to a heap cell
+       -- holding .prim "num?".
+       (match cenv.lookup "num?" with
+        | some idx_n =>
+            match ctx.heap[idx_n]? with
+            | some (.prim "num?") => true
+            | _ => false
+        | none => false)
+   | _ => false)
 
 def MultnExactShape (v : Val) : Prop :=
   ∃ t cenv,
@@ -191,11 +220,14 @@ def MultnExactShape (v : Val) : Prop :=
 
 theorem multnExact_sound_for_shape :
     multnExactPolicy.Sound (fun _ new => MultnExactShape new) := by
-  intro _ new h
+  intro _ _ new h
   unfold multnExactPolicy at h
-  split at h
+  simp only [Bool.and_eq_true] at h
+  obtain ⟨_, h_shape⟩ := h
+  -- h_shape : the second-conjunct match-expression on `new` returns true
+  split at h_shape
   · exact ⟨_, _, rfl⟩
-  · simp at h
+  · simp at h_shape
 
 /-! ## Install-protocol hypotheses -/
 
@@ -227,6 +259,83 @@ def NumQBoundIn (heap : Heap) (new : Val) : Prop :=
 structure InstallFacts (new : Val) (heap : Heap) : Prop where
   orig : OrigBoundIn heap .builtinBaseApply new
   numq : NumQBoundIn heap new
+
+/-- **Bridge lemma**: the runtime gate's admission *implies* the
+    structural install-protocol facts. When `multnExactPolicy ctx
+    old new = true`, we know:
+
+    1. `ctx.target = "base-apply"` (target restriction).
+    2. `new` is multn-shaped with the cenv lookups satisfying
+       `OrigBoundIn` and `NumQBoundIn` against `ctx.heap`.
+
+    Together this gives `InstallFacts new ctx.heap` and the target
+    restriction — both are caller obligations on
+    `multnExact_soundForCE_first_install` that the runtime gate now
+    discharges directly. -/
+theorem multnExactPolicy_implies_InstallFacts
+    {ctx : MutationCtx} {old new : Val}
+    (h : multnExactPolicy ctx old new = true) :
+    ctx.target = "base-apply" ∧ InstallFacts new ctx.heap := by
+  -- Extract `new`'s shape first: this gives a specific closure form.
+  have shape : MultnExactShape new :=
+    multnExact_sound_for_shape ctx old new h
+  obtain ⟨t, cenv, h_new_eq⟩ := shape
+  -- Substitute new = .closure["op","args"] body cenv before unfolding,
+  -- so the match in multnExactPolicy normalizes to the closure arm body.
+  subst h_new_eq
+  unfold multnExactPolicy at h
+  simp only [Bool.and_eq_true, beq_iff_eq] at h
+  obtain ⟨h_tgt, h_orig, h_numq⟩ := h
+  -- Walk the orig check.
+  have orig_facts :
+      ∃ idx_o, cenv.lookup "orig" = some idx_o ∧
+               ctx.heap[idx_o]? = some .builtinBaseApply := by
+    cases h_lookup : cenv.lookup "orig" with
+    | none => simp [h_lookup] at h_orig
+    | some idx_o =>
+        simp only [h_lookup] at h_orig
+        cases h_heap : ctx.heap[idx_o]? with
+        | none => simp [h_heap] at h_orig
+        | some v =>
+            simp only [h_heap] at h_orig
+            cases v with
+            | builtinBaseApply => exact ⟨idx_o, rfl, h_heap⟩
+            | num _ => simp at h_orig
+            | bool _ => simp at h_orig
+            | nilV => simp at h_orig
+            | sym _ => simp at h_orig
+            | cons _ _ => simp at h_orig
+            | prim _ => simp at h_orig
+            | closure _ _ _ => simp at h_orig
+  -- Walk the numq check.
+  have numq_facts :
+      ∃ idx_n, cenv.lookup "num?" = some idx_n ∧
+               ctx.heap[idx_n]? = some (.prim "num?") := by
+    cases h_lookup : cenv.lookup "num?" with
+    | none => simp [h_lookup] at h_numq
+    | some idx_n =>
+        simp only [h_lookup] at h_numq
+        cases h_heap : ctx.heap[idx_n]? with
+        | none => simp [h_heap] at h_numq
+        | some v =>
+            simp only [h_heap] at h_numq
+            cases v with
+            | prim name =>
+                by_cases h_eq : name = "num?"
+                · subst h_eq; exact ⟨idx_n, rfl, h_heap⟩
+                · exfalso; simp [h_eq] at h_numq
+            | num _ => simp at h_numq
+            | bool _ => simp at h_numq
+            | nilV => simp at h_numq
+            | sym _ => simp at h_numq
+            | cons _ _ => simp at h_numq
+            | builtinBaseApply => simp at h_numq
+            | closure _ _ _ => simp at h_numq
+  obtain ⟨idx_o, h_lookup_o, h_heap_o⟩ := orig_facts
+  obtain ⟨idx_n, h_lookup_n, h_heap_n⟩ := numq_facts
+  refine ⟨h_tgt, ?_, ?_⟩
+  · exact ⟨_, _, _, idx_o, rfl, h_lookup_o, h_heap_o⟩
+  · exact ⟨_, _, _, idx_n, rfl, h_lookup_n, h_heap_n⟩
 
 /-- Runtime well-formedness invariants the runner inductively
     maintains: heaps and metaEnv are validity-closed, the captured
@@ -411,7 +520,8 @@ theorem multnExact_CE_num_case_vacuous
     The runner's install protocol guarantees all four when admitting
     a multn modification from the standard initial state. -/
 theorem multnExact_CE_nonnum_case
-    {new : Val} (h_admit : multnExactPolicy .builtinBaseApply new = true)
+    {new : Val} {ctx : MutationCtx}
+    (h_admit : multnExactPolicy ctx .builtinBaseApply new = true)
     {fuel : Nat} (h_fuel : fuel ≥ 2)
     {ptable : PolicyTable} {op : Val} (h_op : OpNotNum op)
     {operands : List Val} {metaEnv : Env} {s : RunState}
@@ -428,7 +538,7 @@ theorem multnExact_CE_nonnum_case
   obtain ⟨h_heap, h_meta_valid, hv_cenv, hv_op, hv_operands⟩ := wf
   -- Structural extraction: new is the multn-shaped closure.
   have shape : MultnExactShape new :=
-    multnExact_sound_for_shape .builtinBaseApply new h_admit
+    multnExact_sound_for_shape ctx .builtinBaseApply new h_admit
   obtain ⟨t, cenv, h_eq⟩ := shape
   subst h_eq
   -- Extract `orig`'s index from h_orig.
@@ -537,7 +647,8 @@ theorem multnExact_CE_nonnum_case
     install-protocol hypotheses (`NumQBoundIn`, `HeapValid`,
     `EnvValid metaEnv`). -/
 theorem multnExact_soundForCE_first_install
-    {new : Val} (h_admit : multnExactPolicy .builtinBaseApply new = true)
+    {new : Val} {ctx : MutationCtx}
+    (h_admit : multnExactPolicy ctx .builtinBaseApply new = true)
     {fuel : Nat} (h_fuel : fuel ≥ 2)
     {ptable : PolicyTable} {op : Val}
     {operands : List Val} {metaEnv : Env} {s : RunState}

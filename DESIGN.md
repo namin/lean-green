@@ -113,6 +113,21 @@ evaluations on a `HeapValid` heap produce `ValValid` values. The
 fuel bound is a precondition the runner must establish at the
 call site.
 
+**Runtime gate alignment.** The `BlackPolicy` signature is
+`MutationCtx → Val → Val → Bool`, where `MutationCtx` carries
+the target name, heap, env, metaEnv, and index at the moment of
+the `.set` gate check (`Black.lean`). The `.set` clause freezes
+`s.policy` *before* evaluating the RHS, so an `installPolicy`-
+mid-RHS attempt cannot retroactively authorize itself. Under
+this signature, `multnExactPolicy` checks `ctx.target =
+"base-apply"`, `OrigBoundIn` (closure cenv binds `"orig"` to a
+heap cell holding `.builtinBaseApply`), and `NumQBoundIn` (cenv
+binds `"num?"` to `.prim "num?"`) at admission time. The bridge
+lemma `multnExactPolicy_implies_InstallFacts` proves that
+admission discharges exactly the `InstallFacts` precondition,
+collapsing the gap between what the kernel proof requires and
+what the runtime gate can establish.
+
 The proof is closed *modulo* the open `.set` case of `frame.eval`
 in `Bisim.lean` (see *Open work* below). The headline theorem only
 invokes `frame.applyDirect` on a post-install user-call, and that

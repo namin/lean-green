@@ -105,21 +105,27 @@ heaps without requiring a prefix relation.
 
 Two concessions worth flagging up-front:
 
-0. **The runner does not yet enforce the verified theorem's
-   preconditions.** `multnExact_soundForCE_first_install` requires
-   install-protocol facts (`InstallFacts`: `OrigBoundIn`,
-   `NumQBoundIn`) that the runtime policy gate cannot inspect —
-   `BlackPolicy : Val → Val → Bool` only sees `(old, new)`, not
-   the target name, heap, or captured-env contents. The active
-   runner policy is also `numGuardPolicy` (loose syntactic shape),
-   not `multnExactPolicy`. So a malicious proposal can match the
-   admission shape while violating `OrigBoundIn` (e.g., shadow
-   `orig` with `let orig = .num 0 in λ ...`), and the runner
-   admits it. The headline theorem is real, but it constrains
-   *programs that actually satisfy its preconditions*, not
-   programs the runner happens to admit. The next-milestone
-   roadmap to close this gap is in `FUTURE.md` /
-   *Hardening the proposal-to-admission seam*.
+0. **The runner partially enforces the verified theorem's
+   preconditions.** As of the runner-vs-theorem hardening
+   (`FUTURE.md` / *Hardening the proposal-to-admission seam*
+   items 1, 3, 6), the runtime gate *can* inspect the heap and
+   target name: `BlackPolicy` is now `MutationCtx → Val → Val →
+   Bool`. `multnExactPolicy` checks `target = "base-apply"`,
+   `OrigBoundIn`, and `NumQBoundIn` at runtime, and the bridge
+   lemma `multnExactPolicy_implies_InstallFacts` proves that
+   admission discharges exactly the install-protocol facts the
+   headline theorem requires. The TOCTOU `.set`-RHS-policy-
+   downgrade attack is closed by freezing `s.policy` before the
+   RHS evaluates. Adversarial smoke tests (scene 3 of `Smoke.lean`)
+   exercise these end-to-end — shadowed-`orig`, wrong target,
+   numGuard-shaped malicious all refused. **What remains:** the
+   active *runner* policy in `Elab.lean` / `Runner.lean` is still
+   hardcoded to `numGuardPolicy` (loose syntactic shape). Switching
+   to `multnExactPolicy` is now mostly a config flip; see item 4
+   of the hardening section in `FUTURE.md`. Until that flip lands,
+   what *can* be enforced isn't yet what *is* enforced by the
+   default runner — but the kernel-side proof and the runtime
+   policy-side check are now aligned.
 
 1. **`eval`'s `.quote v` is restricted to "closed" values.** `eval`
    checks `closedValB v` at the `.quote v` case and returns `none`

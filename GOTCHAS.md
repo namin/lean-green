@@ -11,44 +11,30 @@ references where applicable.
 
 ## Semantics traps
 
-### 1. TOCTOU at `.set`'s policy gate
+### 1. TOCTOU at `.set`'s policy gate (FIXED)
 
-`Black.lean`'s `.set x e` clause currently reads:
-
-```lean
-| .set x e =>
-    match eval n ptable e env metaEnv s with
-    | some (v, s') =>
-        ...
-        if s'.policy oldVal v then ...   -- ← reads policy AFTER e runs
-```
-
-The RHS `e` can call `installPolicy` to downgrade the gate
-before its own admission check. Concrete attack:
-
-```scheme
-(set! base-apply
-  (seq
-    (installPolicy idx_acceptAll)   ; downgrade the gate mid-RHS
-    <malicious-lambda>))            ; ← gate is now acceptAll
-```
-
-The fix is to *freeze* the policy at the start of `.set`:
+`Black.lean`'s `.set x e` now snapshots `s.policy` at the start
+of `.set`, *before* `e` evaluates:
 
 ```lean
 | .set x e =>
-    let gate := s.policy            -- snapshot before e runs
+    let gate := s.policy            -- ← frozen at start of .set
     match eval n ptable e env metaEnv s with
     | some (v, s') =>
         ...
-        if gate oldVal v then ...   -- use the snapshot
+        if gate ctx oldVal v then ...   -- uses the snapshot
 ```
 
-`installPolicy` calls in the RHS still take effect (the resulting
-`s'.policy` reflects them); they just don't get to retroactively
-authorize themselves. This is a classic time-of-check-to-time-of-use
-collapse. Item 1 of `FUTURE.md` /
-*Hardening the proposal-to-admission seam*.
+This prevents the classic time-of-check-to-time-of-use attack
+where the RHS calls `installPolicy idx_acceptAll` to downgrade
+the gate before authorizing itself. `installPolicy` calls in `e`
+still take effect post-`.set` (the resulting `s'.policy` reflects
+them); they just don't authorize the current `.set`.
+
+Tested in `Smoke.lean` scene 3 (`test_strict_freeze_admits_install`
++ `test_strict_freeze_post_install_locked`): an
+`installPolicy idx_rejectAll` mid-RHS doesn't block the install
+itself but does lock down subsequent mutations.
 
 ### 2. `isMetaMutation` is *index*-equality, not *name*-equality
 
@@ -245,9 +231,9 @@ unfolding the foldl manually.
 
 ## Runner / soundness-boundary traps
 
-### 14. The active runner policy is `numGuardPolicy`, not `multnExactPolicy`
+### 14. The active runner policy is `numGuardPolicy`, not `multnExactPolicy` (PARTIALLY FIXED)
 
-`Elab.lean` hardcodes:
+`Elab.lean` still hardcodes:
 
 ```
 .installPolicy 1   -- = idx_numGuard
@@ -256,11 +242,14 @@ unfolding the foldl manually.
 `numGuardPolicy` is **loose** (matches `(if (num? _) ... ...)`
 shape regardless of the else-branch) and is **not CE-sound**.
 The CE-sound policy is `multnExactPolicy` (`idx_multnExact`).
-The runner's "ADMITTED" verdict under `numGuardPolicy` does not
-imply the modification is CE-sound. The Concession 0 paragraph
-in `README` documents this explicitly. Switching to
-`multnExactPolicy` requires the gate to be able to inspect heap
-context (item 3 of `FUTURE.md` / *Hardening seam*).
+
+The infrastructure for switching is now in place: gotcha #16 is
+fixed, `multnExactPolicy` does runtime install-protocol checks,
+and `Smoke.lean` scene 3 exercises it end-to-end. What remains
+is to actually change `Elab.lean` and `Runner.lean` to use
+`idx_multnExact` and update the `Runner.lean` prompt accordingly.
+That's item 4 of `FUTURE.md` / *Hardening seam* (now mostly a
+config flip rather than an architectural extension).
 
 ### 15. `numGuardPolicy`'s else-branch is unconstrained
 
@@ -278,19 +267,29 @@ A closure with a constant else-branch (e.g., `.num 0`) *passes*
 why `numGuardPolicy` is a coarse filter, not a soundness gate.
 Easy to mistake "matches the shape" for "behaves correctly."
 
-### 16. `BlackPolicy : Val → Val → Bool` cannot see context
+### 16. `BlackPolicy` is now context-aware (FIXED)
 
 ```lean
-abbrev BlackPolicy := Val → Val → Bool
+structure MutationCtx where
+  target  : String
+  heap    : Heap
+  env     : Env
+  metaEnv : Env
+  index   : Nat
+
+abbrev BlackPolicy := MutationCtx → Val → Val → Bool
 ```
 
-The policy gate sees only the old and new values — *not* the
-target name, the heap, the env, or anything else about the
-mutation site. So a runtime gate cannot check `OrigBoundIn`
-(needs the heap and the new closure's cenv) or even "is this
-modifying `base-apply` specifically?" (needs the target name).
-Item 3 of `FUTURE.md` / *Hardening seam* extends this to a
-`MutationCtx`.
+The gate now sees the full mutation context. `multnExactPolicy`
+exploits this to check `OrigBoundIn` and `NumQBoundIn` against
+`ctx.heap` at admission time, plus restrict admission to
+`target = "base-apply"`. The bridge lemma
+`multnExactPolicy_implies_InstallFacts` in `Policies.lean` proves
+that runtime admission discharges the install-protocol facts the
+headline soundness theorem requires.
+
+Tested in `Smoke.lean` scene 3 (multiple cases — shadowed-`orig`,
+wrong target, `numGuard`-shaped malicious — all refused).
 
 ### 17. `Elab.lean`'s splice-and-elaborate is not a security boundary
 

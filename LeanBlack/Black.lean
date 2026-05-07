@@ -73,19 +73,34 @@ end
 
 abbrev Heap := List Val
 
+/-- The mutation site context the policy gate sees at admission
+    time. The runtime `.set x e` populates this from the live state
+    just before invoking the gate; the policy can therefore inspect
+    the heap (e.g., for `OrigBoundIn`-style install-protocol facts),
+    the target name (to restrict admission to specific binding
+    names like `"base-apply"`), or the captured-env structure of
+    the proposed value. -/
+structure MutationCtx where
+  target  : String   -- the name being mutated (`x` in `(set! x e)`)
+  heap    : Heap     -- the heap at the moment of the gate check
+                     -- (post-RHS evaluation but pre-update)
+  env     : Env      -- the env in which the `.set` was evaluated
+  metaEnv : Env      -- the meta-env in scope
+  index   : Nat      -- the heap index `target` resolves to
+
 /-- A policy decides whether to admit a meta-env mutation, given the
-    old value at the heap cell and the new value being written.
+    mutation context and the old / new values.
 
     The library of concrete policies and their soundness theorems
     lives in `LeanBlack/Policies.lean`. -/
-abbrev BlackPolicy := Val → Val → Bool
+abbrev BlackPolicy := MutationCtx → Val → Val → Bool
 
 /-- Soundness of a policy w.r.t. an arbitrary architectural floor `P`.
     The canonical instance is `P = ConservativeExt` (defined in
     `Policies.lean`); other instances (termination preservation,
     refinement of a spec, ...) live in the same library. -/
 def BlackPolicy.Sound (P : Val → Val → Prop) (p : BlackPolicy) : Prop :=
-  ∀ old new, p old new = true → P old new
+  ∀ ctx old new, p ctx old new = true → P old new
 
 abbrev PolicyTable := List BlackPolicy
 
@@ -261,6 +276,11 @@ def eval (fuel : Nat) (ptable : PolicyTable) (exp : Expr)
             | none            => none
             | some (avs, s'') => applyDirect n ptable fv avs metaEnv s''
     | .set x e      =>
+        -- Freeze the gate at the start of `.set`, *before* `e`
+        -- evaluates. Otherwise an `installPolicy`-bearing RHS could
+        -- downgrade `s.policy` mid-evaluation and authorize itself
+        -- under the looser policy. See `GOTCHAS.md` #1.
+        let gate := s.policy
         match eval n ptable e env metaEnv s with
         | none         => none
         | some (v, s') =>
@@ -268,11 +288,16 @@ def eval (fuel : Nat) (ptable : PolicyTable) (exp : Expr)
             | none     => none
             | some idx =>
                 if isMetaMutation x env metaEnv then
-                  -- Meta-env mutation: gate via current policy.
+                  -- Meta-env mutation: gate via the *frozen* policy,
+                  -- with the live mutation context so the policy can
+                  -- inspect the heap, target name, etc.
                   match s'.heap[idx]? with
                   | none        => none
                   | some oldVal =>
-                      if s'.policy oldVal v then
+                      let ctx : MutationCtx :=
+                        { target := x, heap := s'.heap, env := env,
+                          metaEnv := metaEnv, index := idx }
+                      if gate ctx oldVal v then
                         some (.bool true, { s' with heap := s'.heap.update idx v })
                       else
                         some (.bool false, s')
@@ -400,7 +425,7 @@ def initBaseEnv : Env × Heap :=
     show the un-governed tower's failure modes (a malicious
     modification that breaks base-level arithmetic). Not sound for
     any non-trivial floor `P`; not in the verified table. -/
-def acceptAllPolicy : BlackPolicy := fun _ _ => true
+def acceptAllPolicy : BlackPolicy := fun _ _ _ => true
 
 /-- Initial state: user env has the standard primitives bound;
     meta-env is the user env with `"base-apply" ↦ builtinBaseApply`
