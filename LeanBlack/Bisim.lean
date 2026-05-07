@@ -4910,6 +4910,21 @@ theorem ListVal.AllBelow.mono {cutoff cutoff' : Nat} (h_le : cutoff ≤ cutoff')
   | [],      _ => trivial
   | _ :: _, ⟨h, t⟩ => ⟨Val.AllBelow.mono h_le h, ListVal.AllBelow.mono h_le t⟩
 
+/-- Closed values are vacuously `AllBelow` at any cutoff: no closures
+    means no embedded indices. -/
+theorem closedValB_AllBelow (cutoff : Nat) :
+    ∀ (v : Val), closedValB v = true → Val.AllBelow cutoff v
+  | .num _,            _ => trivial
+  | .bool _,           _ => trivial
+  | .nilV,             _ => trivial
+  | .sym _,            _ => trivial
+  | .prim _,           _ => trivial
+  | .builtinBaseApply, _ => trivial
+  | .cons x y, hc => by
+      simp [closedValB, Bool.and_eq_true] at hc
+      exact ⟨closedValB_AllBelow cutoff x hc.1, closedValB_AllBelow cutoff y hc.2⟩
+  | .closure _ _ _, hc => by simp [closedValB] at hc
+
 /-- If all of `env`'s bindings are below `cutoff`, shifting is a no-op. -/
 theorem shift_env_id (cutoff offset : Nat) :
     ∀ {env : Env}, Env.AllBelow cutoff env →
@@ -5172,6 +5187,184 @@ theorem shift_heap_update (cutoff : Nat) (padding h : Heap) (idx : Nat) (v : Val
           apply h_eq
           rw [← h_shifted_eq, h_eq_idx]
         rw [Heap.update_get_neq _ _ _ _ h_orig_ne_idx]
+
+/-! ## Joint shift-respect theorem (Option A's central claim)
+
+    `eval / evalList / applyVia / applyDirect` all *commute* with shift:
+    running on shifted inputs gives the shifted result. By joint mutual
+    induction on fuel. Each case is a syntactic check using the shift-
+    commutativity helpers proved above (`shift_env_lookup`,
+    `shift_heap_getElem?`, `shift_heap_update`, `shift_heap_append`,
+    etc.). -/
+
+/-- Joint statement for the shift-respect theorem. -/
+private def ShiftRespectStmt (cutoff : Nat) (padding : Heap) (n : Nat) : Prop :=
+  let offset := padding.length
+  -- eval respects shift
+  (∀ (ptable : PolicyTable) (exp : Expr) (env metaEnv : Env)
+     (s : RunState) (r : Val) (s' : RunState),
+    cutoff ≤ s.heap.length →
+    eval n ptable exp env metaEnv s = some (r, s') →
+    eval n ptable exp (shift_env cutoff offset env) (shift_env cutoff offset metaEnv)
+         (shift_state cutoff padding s)
+      = some (shift_val cutoff offset r, shift_state cutoff padding s')) ∧
+  -- evalList respects shift
+  (∀ (ptable : PolicyTable) (exps : List Expr) (env metaEnv : Env)
+     (s : RunState) (rs : List Val) (s' : RunState),
+    cutoff ≤ s.heap.length →
+    evalList n ptable exps env metaEnv s = some (rs, s') →
+    evalList n ptable exps (shift_env cutoff offset env)
+             (shift_env cutoff offset metaEnv) (shift_state cutoff padding s)
+      = some (shift_listVal cutoff offset rs, shift_state cutoff padding s')) ∧
+  -- applyVia respects shift
+  (∀ (ptable : PolicyTable) (op : Val) (args : List Val) (metaEnv : Env)
+     (s : RunState) (r : Val) (s' : RunState),
+    cutoff ≤ s.heap.length →
+    applyVia n ptable op args metaEnv s = some (r, s') →
+    applyVia n ptable (shift_val cutoff offset op)
+              (shift_listVal cutoff offset args)
+              (shift_env cutoff offset metaEnv) (shift_state cutoff padding s)
+      = some (shift_val cutoff offset r, shift_state cutoff padding s')) ∧
+  -- applyDirect respects shift
+  (∀ (ptable : PolicyTable) (op : Val) (args : List Val) (metaEnv : Env)
+     (s : RunState) (r : Val) (s' : RunState),
+    cutoff ≤ s.heap.length →
+    applyDirect n ptable op args metaEnv s = some (r, s') →
+    applyDirect n ptable (shift_val cutoff offset op)
+                (shift_listVal cutoff offset args)
+                (shift_env cutoff offset metaEnv) (shift_state cutoff padding s)
+      = some (shift_val cutoff offset r, shift_state cutoff padding s'))
+
+private theorem shift_respect (cutoff : Nat) (padding : Heap) :
+    ∀ n, ShiftRespectStmt cutoff padding n := by
+  intro n
+  induction n with
+  | zero =>
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro _ _ _ _ _ _ _ _ h
+        exact absurd h (by unfold eval; simp)
+      · intro _ _ _ _ _ _ _ _ h
+        exact absurd h (by unfold evalList; simp)
+      · intro _ _ _ _ _ _ _ _ h
+        exact absurd h (by unfold applyVia; simp)
+      · intro _ _ _ _ _ _ _ _ h
+        exact absurd h (by unfold applyDirect; simp)
+  | succ k ih =>
+      obtain ⟨ih_eval, ih_evalList, ih_applyVia, ih_applyDirect⟩ := ih
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · -- eval (k+1)
+        intro ptable exp env metaEnv s r s' h_cutoff h_eval
+        cases exp with
+        | num i =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            simp [eval, shift_val]
+        | bool b =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            simp [eval, shift_val]
+        | quote v =>
+            simp only [eval] at h_eval
+            split at h_eval
+            · rename_i h_closed
+              simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+              obtain ⟨h_r, h_s⟩ := h_eval
+              subst h_r; subst h_s
+              -- shift_val on closedValB v is v itself.
+              have h_shift_v : shift_val cutoff padding.length v = v :=
+                shift_val_id cutoff padding.length (closedValB_AllBelow cutoff v h_closed)
+              rw [h_shift_v]
+              simp [eval, h_closed]
+            · simp at h_eval
+        | var x =>
+            simp only [eval] at h_eval
+            cases hl : env.lookup x with
+            | none => rw [hl] at h_eval; simp at h_eval
+            | some idx =>
+                rw [hl] at h_eval
+                simp only at h_eval
+                cases hp : s.heap[idx]? with
+                | none => rw [hp] at h_eval; simp at h_eval
+                | some v =>
+                    rw [hp] at h_eval
+                    simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                    obtain ⟨h_r, h_s⟩ := h_eval
+                    subst h_r; subst h_s
+                    simp only [eval]
+                    rw [shift_env_lookup cutoff padding.length env x idx hl]
+                    simp only
+                    -- (shift_state s).heap = shift_heap s.heap.
+                    show (match (shift_heap cutoff padding s.heap)[shift_idx cutoff padding.length idx]?
+                          with | some v_b => some (v_b, shift_state cutoff padding s)
+                               | none     => none)
+                       = some (shift_val cutoff padding.length v, shift_state cutoff padding s)
+                    rw [shift_heap_getElem? cutoff padding s.heap idx h_cutoff, hp]
+                    rfl
+        | lam ps body =>
+            simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+            obtain ⟨h_r, h_s⟩ := h_eval
+            subst h_r; subst h_s
+            simp [eval, shift_val]
+        | installPolicy idx =>
+            simp only [eval] at h_eval
+            cases hp : ptable[idx]? with
+            | none =>
+                rw [hp] at h_eval
+                simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                simp [eval, hp, shift_val]
+            | some newPolicy =>
+                rw [hp] at h_eval
+                simp only [Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                simp only [eval, hp]
+                show some (.bool true,
+                            { (shift_state cutoff padding s) with policy := newPolicy })
+                  = some (shift_val cutoff padding.length (.bool true),
+                          shift_state cutoff padding { s with policy := newPolicy })
+                simp [shift_val, shift_state, shift_heap]
+        | seq exps =>
+            cases exps with
+            | nil =>
+                simp only [eval, Option.some.injEq, Prod.mk.injEq] at h_eval
+                obtain ⟨h_r, h_s⟩ := h_eval
+                subst h_r; subst h_s
+                simp [eval, shift_val]
+            | cons e rest =>
+                cases rest with
+                | nil =>
+                    simp only [eval] at h_eval
+                    have h_eval_b := ih_eval ptable e env metaEnv s r s' h_cutoff h_eval
+                    simp [eval, h_eval_b]
+                | cons e2 rest2 =>
+                    simp only [eval] at h_eval
+                    cases he : eval k ptable e env metaEnv s with
+                    | none => rw [he] at h_eval; simp at h_eval
+                    | some pr =>
+                        obtain ⟨v_e, s_inner⟩ := pr
+                        rw [he] at h_eval
+                        simp only at h_eval
+                        have h_eval_e_b := ih_eval ptable e env metaEnv s v_e s_inner h_cutoff he
+                        -- s_inner.heap.length ≥ s.heap.length (eval is monotonic).
+                        -- So cutoff ≤ s_inner.heap.length.
+                        have h_cutoff_inner : cutoff ≤ s_inner.heap.length := by
+                          -- eval monotonicity. We don't have a direct lemma; for now
+                          -- assert it via the fact that the recursion is structural.
+                          sorry  -- needs heap-monotonicity lemma for eval
+                        have h_eval_seq_b := ih_eval ptable (.seq (e2 :: rest2))
+                          env metaEnv s_inner r s' h_cutoff_inner h_eval
+                        simp [eval, h_eval_e_b, h_eval_seq_b]
+        | _ => sorry  -- ifte, app, primApp, set, em, letE
+      · -- evalList (k+1)
+        sorry
+      · -- applyVia (k+1)
+        sorry
+      · -- applyDirect (k+1)
+        sorry
 
 /-! ## Prefix-extension lemma (`ValVis_weak`-flavored)
 
