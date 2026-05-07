@@ -1,8 +1,11 @@
 # WAND.md — defeating the trivialization result
 
-A planning document for a result that lean-green is in position to
-state and (eventually) prove. Not yet started in the artifact; this
-file records the target so it isn't lost.
+A planning document for a result lean-green is positioned to deliver.
+The value-level existential lives in `LeanBlack/Wand.lean`; the
+contextual form, W2, and W3 remain. The framing infrastructure
+needed to lift to the contextual form is in place — `Bisim.lean`
+proves `frame` for all of `eval`, `evalList`, `applyVia`,
+`applyDirect`, including the `.set` case.
 
 ## The negative result we are defeating
 
@@ -186,32 +189,23 @@ In rough order of dependency:
    notion of "context" — the natural one is `Expr` with a hole,
    evaluated with the given policy as the runner's active gate.
 
-2. **Close the `.set` case of `frame.eval`.** The W1/W2 proofs
-   route through `frame`. The current `sorry` is the gap. Three
-   architectural options in `FUTURE.md`:
-   - restrict `frame`'s domain to set-free expressions;
-   - replace `HeapExt` with a `HeapEvolves` relation respecting
-     a policy-bisim invariant (~500 LOC);
-   - replace `ValVis` with a step-indexed logical relation (major
-     rewrite).
+2. **Lift `LeanBlack/Wand.lean`'s value-level existential to the
+   full contextual `wand_defeated_existential` (W1).** The framing
+   theorem `frame` discharges the inductive cases; the witness is
+   the β-redex `((λx.x) 0)` and its contractum `0`. Requires (1).
 
-3. **Prove `wand_defeated_existential` (W1)** with the β-redex
-   witness. Requires (1) and (2). Small additional development on
-   top.
-
-4. **Define `BetaEtaEquiv` over `Expr`.** Probably already
+3. **Define `BetaEtaEquiv` over `Expr`.** Probably already
    derivable from `Black.lean`'s evaluation relation; if not, a
    small development.
 
-5. **Prove `wand_defeated_strong` (W2)** by induction on `BetaEtaEquiv`.
-   Each rule reduces to a `ValVis`-preservation step. Bigger
-   development; depends on (1)–(4).
+4. **Prove `wand_defeated_strong` (W2)** by induction on
+   `BetaEtaEquiv`. Each rule reduces to a `ValVis`-preservation
+   step. Bigger development; depends on (1)–(3).
 
-6. **Prove `policy_lattice_monotone` (W3)** by trace replay.
-   Requires (1). Independent of (2) modulo the framing-theorem
-   gap that already affects W1.
+5. **Prove `policy_lattice_monotone` (W3)** by trace replay.
+   Requires (1).
 
-7. **Optional: name the extremes.** Prove `≃_{rejectAll}` extends
+6. **Optional: name the extremes.** Prove `≃_{rejectAll}` extends
    βη and `≃_{acceptAll} = α-equivalence` (the latter is just
    Wand's theorem reproduced in lean-green's setting, a sanity
    check that the framework recovers the negative result when the
@@ -252,10 +246,11 @@ project: the artifact is already most of the way there
 structurally. What is missing is (a) closing the framing gap,
 (b) defining contextual equivalence, (c) writing the theorems.
 
-## Notes for the prover closing the `.set` sorry
+## Why the `.set` framing case was hard
 
-The `.set` case of `frame.eval` is proof obligation (2). Some
-observations that may shorten the search for whoever is working it.
+The `.set` case of `frame.eval` is closed, but the obstruction
+remains worth recording — it constrains the design of any future
+extension of the framing infrastructure.
 
 **Why the natural attempt fails.** `multnExactPolicy` admits
 swapping a `.builtinBaseApply` (one `Val` constructor) for a

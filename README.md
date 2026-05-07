@@ -111,7 +111,15 @@ policy, `env_eq` and `heap_len_eq` invariants on `WFCtx`, and the
 follow-up: `multnExact_CE_nonnum_case`'s historical asymmetric
 `(s, s_alloc)` framing setup is incompatible with the new
 `heap_len_eq` invariant on `WFCtx`. Resolution path is documented
-in `DUMP3.md` (single-side `applyDirect` prefix-extension lemma).
+in `DUMP3.md` (single-side `applyDirect` prefix-extension lemma);
+options are catalogued in `FINDING_SORRY.md`.
+
+**`LeanBlack/Wand.lean`** carries the value-level existential
+defeat of Wand 1998 — non-syntactically-equal expressions (a
+β-redex and its contractum) whose top-level evaluation under any
+policy table agrees — together with three concrete contextual
+instances. The full contextual W1 (universal over arbitrary
+syntactic contexts), W2, and W3 are tracked in `WAND.md`.
 
 ### Concessions
 
@@ -219,6 +227,7 @@ lean-green/
 │   ├── Black.lean                 — Val, Expr, Env, Heap, RunState, eval, ...
 │   ├── Bisim.lean                 — ValVis, EnvVis, WFCtx, HeapEvolution, framing theorems
 │   ├── Policies.lean              — BlackPolicy, library, multnExact_soundForCE_first_install
+│   ├── Wand.lean                  — value-level existential defeat of Wand 1998 (W1)
 │   ├── Bedrock.lean               — `aws bedrock-runtime invoke-model` wrapper
 │   ├── Elab.lean                  — proposal elaboration via `lake env lean --run`
 │   └── Runner.lean                — one-round cascade
