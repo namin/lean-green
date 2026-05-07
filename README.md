@@ -110,9 +110,8 @@ policy, `env_eq` and `heap_len_eq` invariants on `WFCtx`, and the
 **One `sorry` remains in `Policies.lean`** — an architectural
 follow-up: `multnExact_CE_nonnum_case`'s historical asymmetric
 `(s, s_alloc)` framing setup is incompatible with the new
-`heap_len_eq` invariant on `WFCtx`. Resolution path is documented
-in `DUMP3.md` (single-side `applyDirect` prefix-extension lemma);
-options are catalogued in `FINDING_SORRY.md`.
+`heap_len_eq` invariant on `WFCtx`. The resolution path is a
+single-side `applyDirect` prefix-extension lemma.
 
 **`LeanBlack/Wand.lean`** carries the value-level existential
 defeat of Wand 1998 — non-syntactically-equal expressions (a
@@ -214,7 +213,7 @@ Outstanding follow-up (architectural, in `Policies.lean`):
 `multnExact_CE_nonnum_case`'s historical asymmetric framing setup
 (`s` on side A, `s_alloc` on side B) doesn't satisfy the new
 `heap_len_eq` invariant. A single-side `applyDirect` prefix-
-extension lemma would resolve this; see `DUMP3.md` for details.
+extension lemma would resolve this.
 
 ## Layout
 

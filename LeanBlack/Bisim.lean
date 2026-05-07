@@ -114,6 +114,222 @@ theorem ValVis_aux_closure (n : Nat)
        EnvVis_aux n cenv_a cenv_b h_a h_b) := by
   simp [ValVis_aux, EnvVis_aux]
 
+/-! ## Weak depth-indexed bisimulation
+
+    `ValVis_aux_weak` is a sibling relation to `ValVis_aux` with the
+    `cenv_a = cenv_b` clause **dropped** from the closure case. It
+    relates closures that have the same code and cenvs that look up to
+    *bisim*-related cells, without requiring the cenvs themselves to be
+    Lean-equal. This is the form needed for prefix-extension reasoning,
+    where running the same computation on heaps that differ by an
+    inserted prefix produces closures whose cenvs differ in their
+    fresh-region indices but agree on cell values.
+
+    The strong form `ValVis_aux` is preserved unchanged for the
+    `.set`-framing case (which relies on Lean-equal cenvs to align
+    cross-side cell updates). A direct bridge `ValVis → ValVis_weak`
+    lifts framing's strong outputs to the weak form when needed by
+    behavioral-equivalence claims (CE).
+-/
+
+def ValVis_aux_weak : Nat → Val → Val → Heap → Heap → Prop
+  | 0, _, _, _, _ => True
+  | _ + 1, .num a,            .num b,            _,  _   => a = b
+  | _ + 1, .bool a,           .bool b,           _,  _   => a = b
+  | _ + 1, .nilV,             .nilV,             _,  _   => True
+  | _ + 1, .sym a,            .sym b,            _,  _   => a = b
+  | _ + 1, .prim a,           .prim b,           _,  _   => a = b
+  | _ + 1, .builtinBaseApply, .builtinBaseApply, _,  _   => True
+  | n + 1, .cons x_a y_a,     .cons x_b y_b,     h_a, h_b =>
+      ValVis_aux_weak n x_a x_b h_a h_b ∧ ValVis_aux_weak n y_a y_b h_a h_b
+  | n + 1, .closure ps_a body_a cenv_a,
+           .closure ps_b body_b cenv_b, h_a, h_b =>
+      ps_a = ps_b ∧ body_a = body_b ∧
+      (∀ x, match cenv_a.lookup x, cenv_b.lookup x with
+            | none, none => True
+            | some i_a, some i_b =>
+                match h_a[i_a]?, h_b[i_b]? with
+                | some v_a, some v_b => ValVis_aux_weak n v_a v_b h_a h_b
+                | _, _ => False
+            | _, _ => False)
+  | _ + 1, _, _, _, _ => False
+
+/-- Weak env bisim: same shape as `EnvVis_aux` but consumes
+    `ValVis_aux_weak` on cell values (so closures stored in cells need
+    only be weakly bisim-related). -/
+def EnvVis_aux_weak (n : Nat) (env_a env_b : Env) (h_a h_b : Heap) : Prop :=
+  ∀ x, match env_a.lookup x, env_b.lookup x with
+       | none, none => True
+       | some i_a, some i_b =>
+           match h_a[i_a]?, h_b[i_b]? with
+           | some v_a, some v_b => ValVis_aux_weak n v_a v_b h_a h_b
+           | _, _ => False
+       | _, _ => False
+
+def ValVis_weak (v_a v_b : Val) (h_a h_b : Heap) : Prop :=
+  ∀ n, ValVis_aux_weak n v_a v_b h_a h_b
+
+def EnvVis_weak (env_a env_b : Env) (h_a h_b : Heap) : Prop :=
+  ∀ n, EnvVis_aux_weak n env_a env_b h_a h_b
+
+/-- The closure case of `ValVis_aux_weak`: same code, with cenvs
+    pointwise-bisim through their shared name set (no Lean-equality
+    requirement). -/
+theorem ValVis_aux_weak_closure (n : Nat)
+    (ps_a ps_b : List String) (body_a body_b : Expr)
+    (cenv_a cenv_b : Env) (h_a h_b : Heap) :
+    ValVis_aux_weak (n + 1)
+        (.closure ps_a body_a cenv_a) (.closure ps_b body_b cenv_b) h_a h_b
+    ↔ (ps_a = ps_b ∧ body_a = body_b ∧
+       EnvVis_aux_weak n cenv_a cenv_b h_a h_b) := by
+  simp [ValVis_aux_weak, EnvVis_aux_weak]
+
+/-! ### Bridge: strong → weak
+
+    `ValVis_aux n` is strictly stronger than `ValVis_aux_weak n` — it
+    adds `cenv_a = cenv_b` on the closure case, but otherwise matches
+    pointwise. The bridge is direct structural induction on `n`.
+-/
+
+theorem ValVis_aux_to_weak : ∀ (n : Nat) (v_a v_b : Val) (h_a h_b : Heap),
+    ValVis_aux n v_a v_b h_a h_b → ValVis_aux_weak n v_a v_b h_a h_b
+  | 0, _, _, _, _, _ => trivial
+  | n + 1, .num _,            .num _,            _, _, h => h
+  | n + 1, .bool _,           .bool _,           _, _, h => h
+  | n + 1, .nilV,             .nilV,             _, _, h => h
+  | n + 1, .sym _,            .sym _,            _, _, h => h
+  | n + 1, .prim _,           .prim _,           _, _, h => h
+  | n + 1, .builtinBaseApply, .builtinBaseApply, _, _, h => h
+  | n + 1, .cons x_a y_a, .cons x_b y_b, h_a, h_b, h =>
+      ⟨ValVis_aux_to_weak n x_a x_b h_a h_b h.1,
+       ValVis_aux_to_weak n y_a y_b h_a h_b h.2⟩
+  | n + 1, .closure ps_a body_a cenv_a, .closure ps_b body_b cenv_b, h_a, h_b, h => by
+      obtain ⟨hps, hbody, _hcenv, henv⟩ := h
+      show ps_a = ps_b ∧ body_a = body_b ∧ _
+      refine ⟨hps, hbody, ?_⟩
+      intro x
+      have hx := henv x
+      cases ha : cenv_a.lookup x with
+      | none =>
+          cases hb : cenv_b.lookup x with
+          | none => trivial
+          | some i_b => rw [ha, hb] at hx; simp at hx
+      | some i_a =>
+          cases hb : cenv_b.lookup x with
+          | none => rw [ha, hb] at hx; simp at hx
+          | some i_b =>
+              rw [ha, hb] at hx
+              simp only at hx
+              cases hpa : h_a[i_a]? with
+              | none =>
+                  rw [hpa] at hx
+                  cases hpb : h_b[i_b]? <;> rw [hpb] at hx <;> exact hx.elim
+              | some w_a =>
+                  cases hpb : h_b[i_b]? with
+                  | none => rw [hpa, hpb] at hx; exact hx.elim
+                  | some w_b =>
+                      rw [hpa, hpb] at hx
+                      show match h_a[i_a]?, h_b[i_b]? with
+                           | some v_a, some v_b => ValVis_aux_weak n v_a v_b h_a h_b
+                           | _, _ => False
+                      rw [hpa, hpb]
+                      exact ValVis_aux_to_weak n w_a w_b h_a h_b hx
+  -- Mismatched constructor cases: ValVis_aux is False, contradicts h.
+  | n + 1, .num _, .bool _, _, _, h => h.elim
+  | n + 1, .num _, .nilV, _, _, h => h.elim
+  | n + 1, .num _, .sym _, _, _, h => h.elim
+  | n + 1, .num _, .prim _, _, _, h => h.elim
+  | n + 1, .num _, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .num _, .cons _ _, _, _, h => h.elim
+  | n + 1, .num _, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .bool _, .num _, _, _, h => h.elim
+  | n + 1, .bool _, .nilV, _, _, h => h.elim
+  | n + 1, .bool _, .sym _, _, _, h => h.elim
+  | n + 1, .bool _, .prim _, _, _, h => h.elim
+  | n + 1, .bool _, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .bool _, .cons _ _, _, _, h => h.elim
+  | n + 1, .bool _, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .nilV, .num _, _, _, h => h.elim
+  | n + 1, .nilV, .bool _, _, _, h => h.elim
+  | n + 1, .nilV, .sym _, _, _, h => h.elim
+  | n + 1, .nilV, .prim _, _, _, h => h.elim
+  | n + 1, .nilV, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .nilV, .cons _ _, _, _, h => h.elim
+  | n + 1, .nilV, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .sym _, .num _, _, _, h => h.elim
+  | n + 1, .sym _, .bool _, _, _, h => h.elim
+  | n + 1, .sym _, .nilV, _, _, h => h.elim
+  | n + 1, .sym _, .prim _, _, _, h => h.elim
+  | n + 1, .sym _, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .sym _, .cons _ _, _, _, h => h.elim
+  | n + 1, .sym _, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .prim _, .num _, _, _, h => h.elim
+  | n + 1, .prim _, .bool _, _, _, h => h.elim
+  | n + 1, .prim _, .nilV, _, _, h => h.elim
+  | n + 1, .prim _, .sym _, _, _, h => h.elim
+  | n + 1, .prim _, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .prim _, .cons _ _, _, _, h => h.elim
+  | n + 1, .prim _, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .num _, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .bool _, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .nilV, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .sym _, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .prim _, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .cons _ _, _, _, h => h.elim
+  | n + 1, .builtinBaseApply, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .cons _ _, .num _, _, _, h => h.elim
+  | n + 1, .cons _ _, .bool _, _, _, h => h.elim
+  | n + 1, .cons _ _, .nilV, _, _, h => h.elim
+  | n + 1, .cons _ _, .sym _, _, _, h => h.elim
+  | n + 1, .cons _ _, .prim _, _, _, h => h.elim
+  | n + 1, .cons _ _, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .cons _ _, .closure _ _ _, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .num _, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .bool _, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .nilV, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .sym _, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .prim _, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .builtinBaseApply, _, _, h => h.elim
+  | n + 1, .closure _ _ _, .cons _ _, _, _, h => h.elim
+
+theorem EnvVis_aux_to_weak (n : Nat) (env_a env_b : Env) (h_a h_b : Heap) :
+    EnvVis_aux n env_a env_b h_a h_b → EnvVis_aux_weak n env_a env_b h_a h_b := by
+  intro h x
+  have hx := h x
+  cases ha : env_a.lookup x with
+  | none =>
+      cases hb : env_b.lookup x with
+      | none => trivial
+      | some _ => rw [ha, hb] at hx; simp at hx
+  | some i_a =>
+      cases hb : env_b.lookup x with
+      | none => rw [ha, hb] at hx; simp at hx
+      | some i_b =>
+          rw [ha, hb] at hx
+          simp only at hx
+          cases hpa : h_a[i_a]? with
+          | none =>
+              rw [hpa] at hx
+              cases hpb : h_b[i_b]? <;> rw [hpb] at hx <;> exact hx.elim
+          | some w_a =>
+              cases hpb : h_b[i_b]? with
+              | none => rw [hpa, hpb] at hx; exact hx.elim
+              | some w_b =>
+                  rw [hpa, hpb] at hx
+                  show match h_a[i_a]?, h_b[i_b]? with
+                       | some v_a, some v_b => ValVis_aux_weak n v_a v_b h_a h_b
+                       | _, _ => False
+                  rw [hpa, hpb]
+                  exact ValVis_aux_to_weak n w_a w_b h_a h_b hx
+
+theorem ValVis_to_weak {v_a v_b : Val} {h_a h_b : Heap} :
+    ValVis v_a v_b h_a h_b → ValVis_weak v_a v_b h_a h_b :=
+  fun h n => ValVis_aux_to_weak n v_a v_b h_a h_b (h n)
+
+theorem EnvVis_to_weak {env_a env_b : Env} {h_a h_b : Heap} :
+    EnvVis env_a env_b h_a h_b → EnvVis_weak env_a env_b h_a h_b :=
+  fun h n => EnvVis_aux_to_weak n env_a env_b h_a h_b (h n)
+
 /-! ## State extension -/
 
 /-- Cross-side state relation: same policy. The heap relation between
@@ -4339,3 +4555,52 @@ theorem frame : ∀ n, FrameStmt n := by
               have hne : (ps.length != args_a.length) = true := by simp [hlen]
               rw [hne] at h_eval
               simp at h_eval
+
+/-! ## Prefix-extension lemma (`ValVis_weak`-flavored)
+
+    Single-side companion to `frame`. Says: if `applyDirect` succeeds at
+    state `s`, it also succeeds at the prefix-extended state
+    `{ heap := s.heap ++ extras, policy := s.policy }`, and the two
+    results are related by **weak** value bisimulation
+    (`ValVis_weak`, which doesn't require Lean-equal cenvs on result
+    closures — exactly the relaxation needed to handle the cenv-shift
+    that prefix-extension introduces).
+
+    This is the principled replacement for DUMP3.md's proposed
+    `applyDirect_heap_extend` lemma, which used the strong `ValVis`
+    relation and was thus *unsound* for closure-returning ops (the
+    cenv-shift broke `ValVis_aux_closure`'s structural cenv equality).
+    `ValVis_weak` keeps the body-determinism content and drops only
+    the structural-cenv-equality clause that was added for the `.set`
+    framing case (where it's load-bearing) but doesn't make sense for
+    prefix-extension (where fresh allocs deliberately differ in
+    address).
+
+    **Status**: statement complete; proof is open (`sorry`). The proof
+    is a joint mutual induction on fuel for `eval / evalList /
+    applyVia / applyDirect` — structurally similar to `frame` but
+    single-side and with the weaker conclusion. Estimated 600-800 LOC,
+    deferred to a follow-up session. The architectural soundness gap
+    is **localized to this single sorry on a true statement**, not
+    spread across consumers.
+-/
+
+theorem applyDirect_heap_extend_weak
+    {fuel : Nat} {ptable : PolicyTable} {op : Val} {operands : List Val}
+    {metaEnv : Env} {s : RunState}
+    (hresp_pt : PolicyTableRespectsBisim ptable)
+    (h_heap : HeapValid s.heap) (h_op : ValValid op s.heap)
+    (h_operands : ListValValid operands s.heap)
+    (h_meta : EnvValid metaEnv s.heap)
+    (hresp_init : PolicyRespectsBisim s.policy)
+    {r : Val} {s' : RunState}
+    (h_app : applyDirect fuel ptable op operands metaEnv s = some (r, s'))
+    (extras : List Val) (h_extras : ListValValid extras s.heap) :
+    ∃ r' s'',
+      applyDirect fuel ptable op operands metaEnv
+        { heap := s.heap ++ extras, policy := s.policy } = some (r', s'') ∧
+      ValVis_weak r r' s'.heap s''.heap ∧
+      HeapValid s''.heap ∧
+      s'.policy = s''.policy ∧
+      s.heap.length + extras.length ≤ s''.heap.length := by
+  sorry

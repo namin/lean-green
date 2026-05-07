@@ -706,7 +706,7 @@ conflated the two.
 in `Policies.lean` uses an asymmetric `(s, s_alloc)` framing
 setup that no longer satisfies `WFCtx.heap_len_eq`. A single-side
 `applyDirect` prefix-extension lemma (~200-300 LOC) would resolve
-this; see `DUMP3.md`.
+this.
 
 ## Risks
 
@@ -741,8 +741,7 @@ this; see `DUMP3.md`.
   remains: `multnExact_CE_nonnum_case`'s historical asymmetric
   `(s, s_alloc)` framing setup is incompatible with the new
   `WFCtx.heap_len_eq` invariant. Resolution path: a single-side
-  `applyDirect` prefix-extension lemma (~200-300 LOC). See
-  `DUMP3.md`.
+  `applyDirect` prefix-extension lemma (~200-300 LOC).
 
 The first three are sequencing or implementation risks; the last
 records the one outstanding sorry in the build.

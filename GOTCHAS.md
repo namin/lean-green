@@ -206,8 +206,7 @@ cross-side `HeapEvolution` infrastructure plus `PolicyRespectsBisim`,
 `env_eq`, and `heap_len_eq` invariants on `WFCtx`. The proof
 threads these invariants through the framing theorem and uses a
 mutual depth induction `ValVis_aux_update` / `EnvVis_aux_update`
-to handle in-place cell updates. See `DUMP3.md` for the design
-walkthrough.
+to handle in-place cell updates.
 
 A single `sorry` remains in `Policies.lean`'s
 `multnExact_CE_nonnum_case` (the historical asymmetric framing
