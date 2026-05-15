@@ -2685,7 +2685,7 @@ theorem applyPrim_bisim (name : String) (args_a args_b : List Val) (h_a h_b : He
   simp only [hp_plus, hp_minus, hp_times, hp_mul, hp_eq, hp_numQ, hp_boolQ,
              hp_closureQ, hp_primQ, hp_cons, hp_car, hp_cdr, hp_nullQ,
              ↓reduceIte] at h
-  exact Option.noConfusion h
+  cases h
 
 /-! ## Cons-extension of `EnvVis` -/
 
