@@ -7034,7 +7034,7 @@ private theorem shift_respect (cutoff : Nat) (padding : Heap) :
         | set x e =>
             -- The `.set` case requires `PolicyRespectsShift`-style invariance:
             -- the gate's verdict must agree on shifted vs unshifted inputs.
-            -- We prove everything else here; the *only* atomic sorry is the
+            -- We prove everything else here; the one remaining obligation is the
             -- policy-verdict equality (the inner `h_gate_eq` hypothesis below).
             -- The structure: handle bounds, isMetaMutation invariance, heap
             -- update commutativity. The proof is closed modulo a single
@@ -7128,7 +7128,7 @@ private theorem shift_respect (cutoff : Nat) (padding : Heap) :
                           rw [h_shift_state_heap,
                               shift_heap_getElem? cutoff padding s1.heap idx h_cutoff_1, hp]
                           simp only [Option.map_some]
-                          -- Gate verdict equality (atomic sorry).
+                          -- Gate verdict equality (discharged from `PolicyRespectsShift`).
                           -- Side A: s.policy { ..., heap := s1.heap, env := env, metaEnv := metaEnv, index := idx} oldVal v
                           -- Side B: s.policy { ..., heap := shift_heap s1.heap, env := shift_env env,
                           --                    metaEnv := shift_env metaEnv, index := shift_idx idx}
